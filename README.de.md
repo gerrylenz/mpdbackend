@@ -7,23 +7,48 @@ MPD spielt lokale Dateien oder Playlists; ein Icecast-/HTTP-Stream sendet das Au
 
 ## Architektur
 
+Multi-Standort-Setup: **pro MPD-Host eine mpdbackend-Instanz**. Music Assistant lädt alle Kanäle aus einer zentralen `channels.json`; jeder Kanal verweist auf eigenen Stream und Metadaten-Backend.
+
 ```
-┌─────────────┐     idle/events      ┌──────────────────┐     HTTP/MQTT     ┌─────────────────┐
-│     MPD     │ ───────────────────► │  mpdbackend.py   │ ◄──────────────── │ Music Assistant │
-│  (lokal)    │                      │  (server/)       │    /nowplaying    │  (provider/)    │
-└─────────────┘                      └────────┬─────────┘    /cover         └────────┬────────┘
-                                              │                                      │
-                                              │ Icecast / HTTP                       │ Wiedergabe
-                                              ▼                                      ▼
-                                       stream.mp3                            Chromecast / …
+                         ┌─────────────────────────────────────────────────────────────┐
+                         │              Music Assistant (eine Instanz)               │
+                         │  ┌─────────────────────────────────────────────────────┐  │
+                         │  │           music_assistant/ Provider                 │  │
+                         │  │  channels.json  →  Browse / Play / Metadaten-Sync  │  │
+                         │  └───────────┬─────────────────────┬───────────────────┘  │
+                         └──────────────┼─────────────────────┼──────────────────────┘
+                                        │                     │
+                           stream_url   │                     │  backend_url
+                           (Wiedergabe) │                     │  /nowplaying, /cover
+                                        │                     │
+          ┌─────────────────────────────┼─────────────────────┼─────────────────────────────┐
+          │                             │                     │                             │
+          ▼                             ▼                     ▼                             ▼
+   ┌──────────────┐              ┌──────────────┐      ┌──────────────┐              ┌──────────┐
+   │  Icecast /   │              │ mpdbackend   │      │  Icecast /   │              │mpdbackend│
+   │  HTTP-Stream │◄─────────────│  Server :4533│      │  HTTP-Stream │◄─────────────│Server    │
+   │  (Kanal 0)   │   lokal      │  (Standort A)│      │  (Kanal 1)   │   lokal      │(Stand.B) │
+   └──────▲───────┘   Broadcast  └──────▲───────┘      └──────▲───────┘   Broadcast  └────▲─────┘
+          │                             │                     │                             │
+          │                             │ idle/events         │                             │
+          │                      ┌──────┴───────┐        ┌──────┴───────┐                      │
+          │                      │     MPD      │        │     MPD      │                      │
+          │                      │  Standort A  │        │  Standort B  │                      │
+          │                      └──────────────┘        └──────────────┘                      │
+          │         Filiale 1 ··························· Filiale 2 ···························│
+          └─────────────────────────────────────────────────────────────────────────────────────┘
+
+                                        ▼
+                                 Chromecast / Sonos / …
 ```
 
 | Komponente | Aufgabe |
 |------------|---------|
-| **`server/`** | Standalone-Python-Dienst auf dem MPD-Host: liest MPD-Status, extrahiert Cover, stellt HTTP-API bereit |
-| **`music_assistant/`** | Music-Assistant-Provider: lädt Kanäle, holt Metadaten, aktualisiert Player |
+| **`server/`** | **Pro MPD-Host eine Instanz**: liest lokalen MPD-Status, extrahiert Cover, stellt HTTP-API bereit (`/nowplaying`, `/cover`, …) |
+| **`music_assistant/`** | Ein Provider in MA: liest **`channels.json`**, spielt je `stream_url`, holt Metadaten vom jeweiligen `backend_url` |
+| **`channels.json`** | Zentrale Kanalliste (auf jedem Backend identisch, oder eine Quelle über `/channels` des Default-Backends) |
 
-Pro MPD-Host läuft **eine mpdbackend-Server-Instanz**. Eine gemeinsame **`channels.json`** kann mehrere Radiosender listen; jeder Kanal kann eigene Stream-URL und Metadaten-Backend haben.
+Beispiel: Kanal `0` → Stream von Standort A, Metadaten von `http://standort-a:4533`; Kanal `1` → Stream von Standort B, Metadaten von `http://standort-b:4533`. Jede mpdbackend-Instanz spricht nur mit **ihrem lokalen MPD**; MA führt alles in einer Radiothek zusammen.
 
 ## Funktionen
 
