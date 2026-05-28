@@ -11,14 +11,14 @@ MPD spielt lokale Dateien oder Playlists; ein Icecast-/HTTP-Stream sendet das Au
 ┌─────────────┐
 │   MPD #0    │──┐
 └─────────────┘  │
-┌─────────────┐  │  idle/events     ┌──────────────────┐     HTTP/MQTT     ┌─────────────────┐
-│   MPD #1    │──┼────────────────►│  mpdbackend.py   │◄────────────────│ Music Assistant │
+┌─────────────┐  │  idle/events    ┌──────────────────┐     HTTP/MQTT    ┌─────────────────┐
+│   MPD #1    │──┼────────────────►│  mpdbackend.py   │◄─────────────────│ Music Assistant │
 └─────────────┘  │                 │  (server/)       │    /nowplaying   │  (provider/)    │
-┌─────────────┐  │                 └────────┬─────────┘    /cover        └────────┬────────┘
-│   MPD #2    │──┘                          │                                  │
-└─────────────┘                             │ Icecast / HTTP                    │ Wiedergabe
-                                            ▼                                  ▼
-                                     stream 0..2                        Chromecast / …
+┌─────────────┐  │                 └────────┬─────────┘    /cover        └───────┬─────────┘
+│   MPD #2    │──┘                          │                                    │
+└─────────────┘                             │ Icecast / HTTP                     │ Wiedergabe
+                                            ▼                                    ▼
+                                     stream 0..2                           Chromecast / …
 ```
 
 | Komponente | Aufgabe |
