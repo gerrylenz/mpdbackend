@@ -1,0 +1,73 @@
+/etc/mpd/
+ ├── mpd-pop.conf
+ ├── mpd-rock.conf
+ └── mpd-chill.conf
+
+Run mpd with the configuration file:
+$ mpd /etc/mpd/mpd-pop.conf
+$ mpd /etc/mpd/mpd-rock.conf
+$ mpd /etc/mpd/mpd-chill.conf
+
+ Configuration Example:
+ /etc/mpd/mpd-pop.conf
+ music_directory     "/srv/music/pop"
+ playlist_directory  "/var/lib/mpd-pop/playlists"
+ db_file              "/var/lib/mpd-pop/tag_cache"
+ log_file             "/var/log/mpd-pop.log"
+ pid_file             "/run/mpd-pop.pid"
+ state_file           "/var/lib/mpd-pop/state"
+
+ bind_to_address      "0.0.0.0"
+ port                 "6600"
+ user                 "mpd"
+
+ audio_output {
+    type            "httpd"
+    name            "Pop Stream"
+    encoder         "opus"
+    port            "8000"
+    bitrate         "128000"
+    format          "48000:16:2"
+ }
+
+ /etc/mpd/mpd-rock.conf
+ music_directory     "/srv/music/rock"
+ playlist_directory  "/var/lib/mpd-rock/playlists"
+ db_file              "/var/lib/mpd-rock/tag_cache"
+ log_file             "/var/log/mpd-rock.log"
+ pid_file             "/run/mpd-rock.pid"
+ state_file           "/var/lib/mpd-rock/state"
+
+ bind_to_address      "0.0.0.0"
+ port                 "6601"            # < Port + 1
+ user                 "mpd"
+
+ audio_output {
+    type            "httpd"
+    name            "Rock Stream"
+    encoder         "opus"
+    port            "8001"              # < Port + 1
+    bitrate         "128000"
+    format          "48000:16:2"
+ }
+
+ /etc/mpd/mpd-chill.conf
+ music_directory     "/srv/music/chill"
+ playlist_directory  "/var/lib/mpd-chill/playlists"
+ db_file              "/var/lib/mpd-chill/tag_cache"
+ log_file             "/var/log/mpd-chill.log"
+ pid_file             "/run/mpd-chill.pid"
+ state_file           "/var/lib/mpd-chill/state"
+
+ bind_to_address      "0.0.0.0"
+ port                 "6602"            # < Port + 2
+ user                 "mpd"
+
+ audio_output {
+    type            "httpd"
+    name            "Rock Stream"
+    encoder         "opus"
+    port            "8002"              # < Port + 2
+    bitrate         "128000"
+    format          "48000:16:2"
+ }

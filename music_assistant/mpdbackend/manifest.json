@@ -1,0 +1,10 @@
+{
+  "type": "music",
+  "domain": "mpdbackend",
+  "stage": "experimental",
+  "name": "MPD Backend Radio",
+  "description": "Expose an MPD HTTP stream with metadata and cover art from mpdbackend.py.",
+  "codeowners": ["@local"],
+  "requirements": [],
+  "documentation": "https://music-assistant.io/music-providers/"
+}

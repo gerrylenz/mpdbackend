@@ -1,0 +1,9 @@
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+server/data/
+server/channels.json
+server/mpdbackend.env
+server/install/mpd.conf
+*.log

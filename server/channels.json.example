@@ -1,0 +1,23 @@
+{
+  "0": {
+    "name": "Station 1",
+    "description": "First radio channel",
+    "stream_url": "https://example.com:8000/stream1.mp3",
+    "content_type": "mp3",
+    "backend_url": "http://host1.example.com:4533"
+  },
+  "1": {
+    "name": "Station 2",
+    "description": "Second radio channel",
+    "stream_url": "https://example.com:8000/stream2.mp3",
+    "content_type": "mp3",
+    "backend_url": "http://host2.example.com:4533"
+  },
+  "2": {
+    "name": "Station 3",
+    "description": "Third radio channel",
+    "stream_url": "https://example.com:8000/stream3.mp3",
+    "content_type": "mp3",
+    "backend_url": "http://host3.example.com:4533"
+  }
+}

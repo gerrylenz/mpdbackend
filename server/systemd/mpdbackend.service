@@ -1,0 +1,18 @@
+[Unit]
+Description=MPD Backend metadata service for Music Assistant
+After=network.target mpd.service
+Wants=mpd.service
+
+[Service]
+Type=simple
+User=gerry
+Group=gerry
+EnvironmentFile=-/etc/mpdbackend.env
+WorkingDirectory=__INSTALL_DIR__
+ExecStart=__INSTALL_DIR__/venv/bin/python __INSTALL_DIR__/mpdbackend.py
+Restart=always
+RestartSec=5
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target
