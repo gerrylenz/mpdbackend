@@ -32,3 +32,26 @@ def test_parse_radio_builds_station_with_logo_url() -> None:
     image = radio.metadata.images[0]
     assert image.type == ImageType.THUMB
     assert image.path == "http://backend:4533/stationlogo?channel=0"
+
+
+def test_parse_radio_logo_url_includes_mtime_cache_buster() -> None:
+    """logo_mtime should be appended so Music Assistant refetches updated logos."""
+    channel: RadioMpdChannel = {
+        "name": "EDEKA - Pos",
+        "description": "Store radio",
+        "stream_url": "https://example.com/stream.mp3",
+        "content_type": ContentType.MP3,
+        "logo_mtime": 1716900000,
+    }
+
+    radio = parse_radio(
+        channel_id="0",
+        channel_info=channel,
+        instance_id="mpdbackend_test",
+        provider_domain="mpdbackend",
+        backend_url="http://backend:4533",
+    )
+
+    assert radio.metadata.images[0].path == (
+        "http://backend:4533/stationlogo?channel=0&v=1716900000"
+    )

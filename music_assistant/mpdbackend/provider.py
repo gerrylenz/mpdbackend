@@ -19,6 +19,7 @@ from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 from music_assistant.models.music_provider import MusicProvider
 
 from . import parsers
+from .parsers import station_logo_url
 from .constants import (
     CHANNELS_RELOAD_INTERVAL,
     CONF_BACKEND_URL,
@@ -111,6 +112,11 @@ class MPDBackendRadioProvider(MusicProvider):
             }
             if backend_url := raw.get("backend_url"):
                 channel["backend_url"] = str(backend_url).rstrip("/")
+            if logo_mtime := raw.get("logo_mtime"):
+                try:
+                    channel["logo_mtime"] = int(logo_mtime)
+                except (TypeError, ValueError):
+                    pass
             channels[str(channel_id)] = channel
         return channels
 
@@ -151,7 +157,11 @@ class MPDBackendRadioProvider(MusicProvider):
     def _station_logo_url(self, channel_id: str, channels: dict[str, RadioMpdChannel]) -> str:
         """Return the HTTP URL for a channel station logo."""
         backend_url = self._channel_backend_url(channel_id, channels)
-        return f"{backend_url}/stationlogo?channel={channel_id}"
+        return station_logo_url(
+            backend_url,
+            channel_id,
+            channels[channel_id].get("logo_mtime"),
+        )
 
     async def search(
         self,

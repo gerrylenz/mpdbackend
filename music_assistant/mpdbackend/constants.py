@@ -24,3 +24,4 @@ class RadioMpdChannel(TypedDict):
     stream_url: str
     content_type: ContentType
     backend_url: NotRequired[str]
+    logo_mtime: NotRequired[int]

@@ -164,6 +164,28 @@ def resolve_station_logo_path(channel_id: str) -> tuple[str, str] | None:
     return None
 
 
+def station_logo_mtime(channel_id: str) -> int | None:
+    """Return the logo file mtime as an integer epoch, for cache-busting."""
+    resolved = resolve_station_logo_path(channel_id)
+    if not resolved:
+        return None
+    return int(os.path.getmtime(resolved[0]))
+
+
+def enrich_channels_payload(channels: dict) -> dict:
+    """Add logo_mtime per channel so clients can bust image caches after logo updates."""
+    enriched: dict = {}
+    for channel_id, channel_data in channels.items():
+        if not isinstance(channel_data, dict):
+            enriched[channel_id] = channel_data
+            continue
+        entry = dict(channel_data)
+        if mtime := station_logo_mtime(str(channel_id)):
+            entry["logo_mtime"] = mtime
+        enriched[channel_id] = entry
+    return enriched
+
+
 def logo_content_type(path: str) -> str:
     """Return HTTP content type for a logo file."""
     ext = os.path.splitext(path)[1].lower()
@@ -544,7 +566,7 @@ class HTTPAPI:
         req.wfile.write(raw)
 
     def handle_channels(self, req):
-        raw = json.dumps(self.channel_registry.get()).encode("utf-8")
+        raw = json.dumps(enrich_channels_payload(self.channel_registry.get())).encode("utf-8")
 
         req.send_response(200)
         req.send_header("Content-Type", "application/json")

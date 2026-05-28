@@ -9,6 +9,22 @@ from music_assistant_models.media_items import (
 from .constants import RadioMpdChannel
 
 
+def station_logo_url(
+    backend_url: str, channel_id: str, logo_mtime: int | None = None
+) -> str:
+    """
+    Build the station logo HTTP path for a channel.
+
+    :param backend_url: mpdbackend base URL for this channel.
+    :param channel_id: MPD radio channel id.
+    :param logo_mtime: Optional file mtime used to bust downstream image caches.
+    """
+    url = f"{backend_url.rstrip('/')}/stationlogo?channel={channel_id}"
+    if logo_mtime is not None:
+        url = f"{url}&v={logo_mtime}"
+    return url
+
+
 def parse_radio(
     channel_id: str,
     channel_info: RadioMpdChannel,
@@ -42,7 +58,11 @@ def parse_radio(
         },
     )
 
-    logo_url = f"{backend_url.rstrip('/')}/stationlogo?channel={channel_id}"
+    logo_url = station_logo_url(
+        backend_url,
+        channel_id,
+        channel_info.get("logo_mtime"),
+    )
     radio.metadata.add_image(
         MediaItemImage(
             provider=instance_id,
