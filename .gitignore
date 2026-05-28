@@ -6,4 +6,5 @@ server/data/
 server/channels.json
 server/mpdbackend.env
 server/install/mpd.conf
+github_token
 *.log
