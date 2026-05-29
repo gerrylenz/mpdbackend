@@ -184,4 +184,4 @@ cd music_assistant && pytest tests/
 
 ## License
 
-Private / use at your own discretion. Adjust before publishing if needed.
+MIT License
