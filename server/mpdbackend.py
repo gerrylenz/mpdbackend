@@ -3,21 +3,15 @@
 
 import json
 import re
-import sys
 import time
 import logging
 import threading
 import os
-import subprocess
 import hashlib
 
-from io import BytesIO
-from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
-from urllib.parse import parse_qsl, urlparse
-
-from PIL import Image
 from mpd import MPDClient
-from paho.mqtt import client as mqtt_client
+
+from mpdbackend_cover import CoverService
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -26,7 +20,7 @@ DEFAULT_ENV_FILE = os.path.join(BASE_DIR, "mpdbackend.env")
 
 
 def load_env_file() -> None:
-    """Load mpdbackend.env into os.environ (does not override existing variables)."""
+    """Lädt mpdbackend.env in os.environ (bestehende Variablen bleiben unverändert)."""
     env_path = os.getenv("MPDBACKEND_ENV_FILE", DEFAULT_ENV_FILE)
     if not os.path.isfile(env_path):
         return
@@ -42,6 +36,14 @@ def load_env_file() -> None:
                 os.environ[key] = value.strip()
 
 
+def env_bool(name: str, default: bool = False) -> bool:
+    """Wandelt eine Umgebungsvariable in einen bool-Wert um (true/1/yes/on)."""
+    raw = os.getenv(name, "").strip().lower()
+    if not raw:
+        return default
+    return raw in ("1", "true", "yes", "on")
+
+
 load_env_file()
 
 
@@ -49,47 +51,36 @@ load_env_file()
 # CONFIG
 # =========================
 
-MQTT_BROKER = os.getenv("MPDBACKEND_MQTT_BROKER", "")
-MQTT_PORT = int(os.getenv("MPDBACKEND_MQTT_PORT", "1883"))
-MQTT_USERNAME = os.getenv("MPDBACKEND_MQTT_USERNAME", "")
-MQTT_PASSWORD = os.getenv("MPDBACKEND_MQTT_PASSWORD", "")
-
-TOPIC_STATE = os.getenv("MPDBACKEND_MQTT_TOPIC_STATE", "mpdbackend/state")
-TOPIC_COVER = os.getenv("MPDBACKEND_MQTT_TOPIC_COVER", "mpdbackend/cover")
+MQTT_ENABLED = env_bool("MPDBACKEND_MQTT_ENABLED", True)
 
 MUSIC_ROOT = os.getenv("MPDBACKEND_MUSIC_ROOT", "/home/musik")
-COVER_DIR = os.getenv("MPDBACKEND_COVER_DIR", os.path.join(DEFAULT_DATA_DIR, "covers"))
 STATION_LOGO_DIR = os.getenv(
     "MPDBACKEND_STATION_LOGO_DIR", os.path.join(DEFAULT_DATA_DIR, "logos")
 )
 
 MPD_SOCKET = os.getenv("MPDBACKEND_MPD_SOCKET", "/run/mpd/socket")
+PLAYLIST_DIR = os.getenv("MPDBACKEND_PLAYLIST_DIR", "").strip()
 PUBLIC_BASE_URL = os.getenv("MPDBACKEND_PUBLIC_BASE_URL", "")
-
-HTTP_HOST = "0.0.0.0"
-HTTP_PORT = int(os.getenv("MPDBACKEND_HTTP_PORT", "4533"))
 
 logger = logging.getLogger("mpdbackend")
 
-COVER_NAME_RE = re.compile(r"^cover_[0-9a-f]{16,64}\.jpg$")
 CHANNEL_ID_RE = re.compile(r"^[0-9a-zA-Z_-]{1,32}$")
 STATION_LOGO_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp")
-FOLDER_COVER_NAMES = ("cover.jpg", "folder.jpg", "Folder.jpg", "cover.png", "folder.png")
 
 DEFAULT_CHANNELS_FILE = os.path.join(BASE_DIR, "channels.json")
 
-
 class ChannelRegistry:
-    """Thread-safe radio channel registry loaded from channels.json."""
+    """Thread-sichere Senderliste aus channels.json."""
 
     def __init__(self) -> None:
+        """Initialisiert Registry und lädt channels.json."""
         self._lock = threading.Lock()
         self._channels_file = os.getenv("MPDBACKEND_CHANNELS_FILE", DEFAULT_CHANNELS_FILE).strip()
         self._mtime: float | None = None
         self._channels = self._read_channels()
 
     def _read_channels(self) -> dict:
-        """Load channels from the configured JSON file."""
+        """Liest die Sender aus der konfigurierten JSON-Datei."""
         if not self._channels_file or not os.path.isfile(self._channels_file):
             logger.warning(
                 "Channels file not found: %s (copy channels.json.example to channels.json)",
@@ -110,7 +101,7 @@ class ChannelRegistry:
         return {}
 
     def _maybe_reload(self) -> None:
-        """Reload channels when the configured file changed on disk."""
+        """Lädt channels.json neu, wenn die Datei geändert wurde."""
         if not self._channels_file or not os.path.isfile(self._channels_file):
             return
         mtime = os.path.getmtime(self._channels_file)
@@ -122,7 +113,7 @@ class ChannelRegistry:
             logger.info("Reloaded %s radio channel(s) from %s", len(channels), self._channels_file)
 
     def get(self) -> dict:
-        """Return the current channel registry."""
+        """Gibt die aktuelle Senderliste zurück."""
         with self._lock:
             self._maybe_reload()
             return self._channels
@@ -136,16 +127,17 @@ CHANNEL_REGISTRY = ChannelRegistry()
 # =========================
 
 def build_full_path(rel_path):
+    """Baut den absoluten Pfad zur Audiodatei unter MUSIC_ROOT."""
     return os.path.join(MUSIC_ROOT, rel_path)
 
 
 def channel_logo_basename(channel_id: str) -> str:
-    """Return the on-disk basename for a channel logo file."""
+    """Liefert den Dateinamen-Basis für ein Senderlogo."""
     return f"channel_{channel_id}"
 
 
 def resolve_station_logo_path(channel_id: str) -> tuple[str, str] | None:
-    """Return (file path, content type) for a station logo by channel id."""
+    """Sucht Senderlogo-Datei und liefert (Pfad, Content-Type)."""
     if not channel_id or not CHANNEL_ID_RE.match(channel_id):
         return None
 
@@ -165,7 +157,7 @@ def resolve_station_logo_path(channel_id: str) -> tuple[str, str] | None:
 
 
 def station_logo_mtime(channel_id: str) -> int | None:
-    """Return the logo file mtime as an integer epoch, for cache-busting."""
+    """Liefert Logo-mtime für Cache-Busting in der Channel-API."""
     resolved = resolve_station_logo_path(channel_id)
     if not resolved:
         return None
@@ -173,7 +165,7 @@ def station_logo_mtime(channel_id: str) -> int | None:
 
 
 def enrich_channels_payload(channels: dict) -> dict:
-    """Add logo_mtime per channel so clients can bust image caches after logo updates."""
+    """Ergänzt Sender-Daten um logo_mtime pro Kanal."""
     enriched: dict = {}
     for channel_id, channel_data in channels.items():
         if not isinstance(channel_data, dict):
@@ -187,7 +179,7 @@ def enrich_channels_payload(channels: dict) -> dict:
 
 
 def logo_content_type(path: str) -> str:
-    """Return HTTP content type for a logo file."""
+    """Ermittelt den HTTP Content-Type für eine Logo-Datei."""
     ext = os.path.splitext(path)[1].lower()
     return {
         ".png": "image/png",
@@ -198,112 +190,21 @@ def logo_content_type(path: str) -> str:
 
 
 # =========================
-# COVER
-# =========================
-
-class CoverService:
-
-    def __init__(self):
-        self.cover_dir = COVER_DIR
-        self.current = "blank.jpg"
-        os.makedirs(self.cover_dir, exist_ok=True)
-
-    def _ffmpeg_extract_map(self, path: str, map_selector: str) -> bytes | None:
-        cmd = [
-            "ffmpeg",
-            "-loglevel", "error",
-            "-i", path,
-            "-map", map_selector,
-            "-frames:v", "1",
-            "-f", "image2pipe",
-            "pipe:1",
-        ]
-
-        try:
-            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=3)
-            if result.returncode != 0 or not result.stdout:
-                return None
-            return result.stdout
-        except Exception:
-            return None
-
-    def ffmpeg_extract(self, path):
-        """Extract embedded cover art via ffmpeg (video stream or ID3 APIC)."""
-        for map_selector in ("0:v:0", "0:p:0"):
-            raw = self._ffmpeg_extract_map(path, map_selector)
-            if raw:
-                return raw
-        return self._folder_cover(path)
-
-    def _folder_cover(self, audio_file: str) -> bytes | None:
-        """Return folder-level cover art bytes when present beside the audio file."""
-        folder = os.path.dirname(audio_file)
-        for name in FOLDER_COVER_NAMES:
-            candidate = os.path.join(folder, name)
-            if os.path.isfile(candidate):
-                try:
-                    with open(candidate, "rb") as handle:
-                        return handle.read()
-                except OSError:
-                    return None
-        return None
-
-    def process(self, raw):
-        try:
-            img = Image.open(BytesIO(raw))
-            img = img.convert("RGB")
-            img.thumbnail((512, 512))
-
-            buf = BytesIO()
-            img.save(buf, format="JPEG", quality=85)
-            return buf.getvalue()
-        except Exception:
-            return None
-
-    def cache_name(self, audio_file):
-        stat = os.stat(audio_file)
-        key = f"{audio_file}:{stat.st_size}:{stat.st_mtime_ns}"
-        digest = hashlib.sha256(key.encode()).hexdigest()[:24]
-        return f"cover_{digest}.jpg"
-
-    def generate(self, audio_file):
-        raw = self.ffmpeg_extract(audio_file)
-        if not raw:
-            self.current = "blank.jpg"
-            return
-
-        img = self.process(raw)
-        if not img:
-            self.current = "blank.jpg"
-            return
-
-        self.current = self.cache_name(audio_file)
-        path = os.path.join(self.cover_dir, self.current)
-
-        if not os.path.exists(path):
-            tmp = path + ".tmp"
-            with open(tmp, "wb") as f:
-                f.write(img)
-            os.replace(tmp, path)
-
-    def cover_name(self):
-        return self.current if self.current != "blank.jpg" else ""
-
-    def path(self):
-        return os.path.join(self.cover_dir, self.current)
-
-
-# =========================
 # MPD
 # =========================
 
 class MPD:
+    """Thread-sicherer MPD-Client über Unix-Socket."""
 
     def __init__(self):
+        """Initialisiert Client-Zustand und Playlist-Cache."""
         self.client = None
         self.lock = threading.Lock()
+        self._playlists_cache: list[str] | None = None
+        self._playlists_dir_mtime: float | None = None
 
     def connect(self):
+        """Stellt Verbindung zum MPD-Socket her."""
         try:
             self.client = MPDClient()
             self.client.timeout = 5
@@ -313,26 +214,158 @@ class MPD:
             self.client = None
             return False
 
-    def safe(self, cmd):
+    def safe(self, cmd, *args, default=None):
+        """Führt einen MPD-Befehl aus und liefert bei Fehler den Default."""
+        if default is None:
+            default = {}
         with self.lock:
             try:
                 if not self.client and not self.connect():
-                    return {}
-                return getattr(self.client, cmd)()
+                    return default
+                return getattr(self.client, cmd)(*args)
             except Exception:
                 self.client = None
-                return {}
+                return default
+
+    def idle(self):
+        """Wartet auf MPD-Events (gesperrter Zugriff, keine parallelen Befehle)."""
+        with self.lock:
+            try:
+                if not self.client and not self.connect():
+                    return None
+                return self.client.idle()
+            except Exception:
+                self.client = None
+                return None
+
+    def run_command(self, action):
+        """Führt eine MPD-Aktion aus (beendet idle, damit Befehle nicht blockieren)."""
+        with self.lock:
+            try:
+                if not self.client and not self.connect():
+                    return False
+                try:
+                    self.client.noidle()
+                except Exception:
+                    pass
+                action(self.client)
+                return True
+            except Exception as err:
+                logger.warning("MPD command failed: %s", err)
+                self.client = None
+                return False
+
+    @staticmethod
+    def normalize_playlist_name(name: str) -> str:
+        """Normalisiert Playlist-Namen für MPD load (mit oder ohne .m3u)."""
+        name = (name or "").strip()
+        if name.endswith(".m3u"):
+            return name[:-4]
+        return name
+
+    def load_and_play_playlist(self, playlist_name: str) -> bool:
+        """Lädt eine gespeicherte Playlist in die Queue und startet die Wiedergabe."""
+        mpd_name = self.normalize_playlist_name(playlist_name)
+        if not mpd_name:
+            return False
+
+        def _load_play(client):
+            client.load(mpd_name)
+            client.play()
+
+        ok = self.run_command(_load_play)
+        if ok:
+            logger.info("Loaded and playing playlist: %s", playlist_name)
+        return ok
+
+    def play(self) -> bool:
+        """Startet oder setzt die Wiedergabe fort."""
+        return self.run_command(lambda client: client.play())
+
+    def stop(self) -> bool:
+        """Stoppt die Wiedergabe."""
+        return self.run_command(lambda client: client.stop())
+
+    def next_track(self) -> bool:
+        """Springt zum nächsten Titel."""
+        return self.run_command(lambda client: client.next())
+
+    def previous_track(self) -> bool:
+        """Springt zum vorherigen Titel."""
+        return self.run_command(lambda client: client.previous())
+
+    def _playlist_directory(self) -> str:
+        """Ermittelt das MPD-Playlist-Verzeichnis (Env oder MPD config)."""
+        if PLAYLIST_DIR and os.path.isdir(PLAYLIST_DIR):
+            return PLAYLIST_DIR
+
+        config = self.safe("config", default={})
+        if isinstance(config, dict):
+            path = (config.get("playlist_directory") or "").strip()
+            if path and os.path.isdir(path):
+                return path
+        return ""
+
+    def _playlists_from_mpd(self) -> list[str]:
+        """Fallback: gespeicherte MPD-Playlists mit .m3u-Endung."""
+        entries = self.safe("listplaylists", default=[])
+        if not isinstance(entries, list):
+            return []
+
+        names: list[str] = []
+        for entry in entries:
+            name = (entry.get("playlist") or "").strip()
+            if not name:
+                continue
+            names.append(name if name.endswith(".m3u") else f"{name}.m3u")
+        return sorted(names)
+
+    def available_playlists(self) -> list[str]:
+        """Listet alle .m3u-Dateien im Playlist-Verzeichnis auf."""
+        playlist_dir = self._playlist_directory()
+        if not playlist_dir:
+            return self._playlists_from_mpd()
+
+        try:
+            dir_mtime = os.path.getmtime(playlist_dir)
+        except OSError:
+            return []
+
+        if (
+            self._playlists_cache is not None
+            and self._playlists_dir_mtime == dir_mtime
+        ):
+            return self._playlists_cache
+
+        playlists: list[str] = []
+        try:
+            for name in sorted(os.listdir(playlist_dir)):
+                if not name.endswith(".m3u"):
+                    continue
+                path = os.path.join(playlist_dir, name)
+                if os.path.isfile(path):
+                    playlists.append(name)
+        except OSError:
+            playlists = []
+
+        self._playlists_dir_mtime = dir_mtime
+        self._playlists_cache = playlists
+        return playlists
+
 
 # =========================
 # WORKER
 # =========================
 
 class Worker(threading.Thread):
+    """Hintergrund-Thread: MPD idle → Status/Cover/MQTT aktualisieren."""
 
     def __init__(self, mpd):
+        """Initialisiert Worker mit MPD-Client und Cover-Service."""
         super().__init__(daemon=True)
         self.mpd = mpd
         self.mqtt = None
+        self.mqtt_publisher = None
 
         self.last_song = {}
         self.last_status = {}
@@ -341,35 +374,41 @@ class Worker(threading.Thread):
         self.stop_flag = False
 
         self.last_signature = None
-        self.state_cache = None
 
         self.lock = threading.Lock()
 
         self.current_hash = ""
+        self.elapsed_sync_base = 0.0
+        self.elapsed_sync_at = 0.0
 
-    # -------------------------
-    # duration fix (IMPORTANT)
-    # -------------------------
+    def sync_elapsed_clock(self, status: dict) -> None:
+        """Speichert MPD-elapsed als Referenz für die Interpolation."""
+        if "elapsed" not in status:
+            return
+        try:
+            self.elapsed_sync_base = max(0.0, float(status["elapsed"]))
+        except (TypeError, ValueError):
+            return
+        self.elapsed_sync_at = time.monotonic()
+
     def resolve_duration(self, song, status):
+        """Liefert Track-Dauer aus Song- oder Status-Metadaten."""
         return float(song.get("time") or status.get("duration") or 0)
 
-    # -------------------------
-    # snapshot
-    # -------------------------
     def snapshot(self):
+        """Liest aktuellen Song/Status und speichert sie im Worker."""
         song = self.mpd.safe("currentsong")
         status = self.mpd.safe("status")
 
         with self.lock:
             self.last_song = song
             self.last_status = status
-        
+            self.sync_elapsed_clock(status)
+
         return song, status
 
-    # -------------------------
-    # track change
-    # -------------------------
     def handle_track(self, song, status):
+        """Bei Trackwechsel Cover neu generieren; True wenn gewechselt."""
         sig = (song.get("file"), status.get("songid"))
 
         if sig == self.last_signature:
@@ -383,12 +422,9 @@ class Worker(threading.Thread):
 
         return True
 
-    # -------------------------
-    # publish
-    # -------------------------
     def publish(self, song, status):
-
-        changed = self.handle_track(song, status)
+        """Aktualisiert Hash und publiziert Status per MQTT (falls aktiv)."""
+        self.handle_track(song, status)
 
         payload = {
             "state": status.get("state"),
@@ -397,42 +433,37 @@ class Worker(threading.Thread):
             "album": song.get("album"),
             "elapsed": float(status.get("elapsed") or 0),
             "duration": self.resolve_duration(song, status),
-            "media_image_url": self.cover.cover_name(),
+            "cover_name": self.cover.cover_name(),
         }
 
-        new_hash  = hashlib.md5(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
+        new_hash = hashlib.md5(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
         with self.lock:
             self.current_hash = new_hash
 
-        if payload != self.state_cache:
-            self.state_cache = payload
-            self.mqtt.publish(TOPIC_STATE, json.dumps(payload), retain=True)
-            
-    # -------------------------
-    # publish
-    # -------------------------
+        if self.mqtt_publisher:
+            self.mqtt_publisher.publish(song, status, payload, MUSIC_ROOT)
+
     def update_state(self):
+        """Liest MPD-Status und aktualisiert last_song/last_status."""
         song = self.mpd.safe("currentsong") or {}
         status = self.mpd.safe("status") or {}
 
         with self.lock:
             self.last_song = song
             self.last_status = status
+            self.sync_elapsed_clock(status)
 
         return song, status
-    
-    # -------------------------
-    # LOOP (idle = correct approach)
-    # -------------------------
+
     def run(self):
+        """Hauptschleife: MPD idle abwarten und bei Änderung publizieren."""
         if not self.mpd.connect():
             time.sleep(2)
-        
-        # Initial load erzwingen
+
         song = self.mpd.safe("currentsong") or {}
         status = self.mpd.safe("status") or {}
 
-        self.handle_track(song, status) # FORCE FIRST COVER
+        self.handle_track(song, status)
         self.update_state()
         self.publish(song, status)
 
@@ -441,7 +472,7 @@ class Worker(threading.Thread):
                 if not self.mpd.client and not self.mpd.connect():
                     time.sleep(2)
                     continue
-                self.mpd.client.idle()
+                self.mpd.idle()
 
                 song, status = self.update_state()
                 self.publish(song, status)
@@ -452,228 +483,32 @@ class Worker(threading.Thread):
 
 
 # =========================
-# MQTT
-# =========================
-
-def validate_config() -> None:
-    """Abort startup when required settings from mpdbackend.env are missing."""
-    env_path = os.getenv("MPDBACKEND_ENV_FILE", DEFAULT_ENV_FILE)
-    missing = [
-        name
-        for name, value in (
-            ("MPDBACKEND_MQTT_BROKER", MQTT_BROKER),
-            ("MPDBACKEND_MQTT_USERNAME", MQTT_USERNAME),
-            ("MPDBACKEND_MQTT_PASSWORD", MQTT_PASSWORD),
-        )
-        if not value
-    ]
-    if missing:
-        logger.error(
-            "Missing required settings in %s: %s",
-            env_path,
-            ", ".join(missing),
-        )
-        sys.exit(1)
-
-
-def create_mqtt(worker):
-    client = mqtt_client.Client(mqtt_client.CallbackAPIVersion.VERSION2)
-    client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
-    client.connect(MQTT_BROKER, MQTT_PORT, 60)
-    client.loop_start()
-    return client
-
-
-# =========================
-# HTTP
-# =========================
-
-class HTTPAPI:
-
-    def __init__(self, worker, channel_registry: ChannelRegistry):
-        self.worker = worker
-        self.channel_registry = channel_registry
-
-    def start(self):
-
-        api = self  # wichtig: closure für Handler
-
-        class Handler(BaseHTTPRequestHandler):
-
-            def do_GET(self):
-                path = urlparse(self.path).path
-
-                if path == "/hash":
-                    api.handle_changed(self)
-                    return
-
-                if path == "/nowplaying":
-                    api.handle_nowplaying(self)
-                    return
-
-                if path == "/cover":
-                    api.handle_cover(self)
-                    return
-
-                if path == "/stationlogo":
-                    api.handle_stationlogo(self)
-                    return
-
-                if path == "/channels":
-                    api.handle_channels(self)
-                    return
-
-                if path == "/health":
-                    api.handle_health(self)
-                    return
-
-                self.send_response(404)
-                self.end_headers()
-
-            def log_message(self, fmt, *args):
-                # optional: weniger Spam im log
-                return
-
-        server = ThreadingHTTPServer((HTTP_HOST, HTTP_PORT), Handler)
-
-        # worker in server injizieren
-        server.worker = self.worker
-
-        threading.Thread(target=server.serve_forever, daemon=True).start()
-
-    def handle_nowplaying(self, req):
-        song = self.worker.last_song or {}
-        status = self.worker.last_status or {}
-
-        data = {
-            "state": status.get("state"),
-            "title": song.get("title"),
-            "artist": song.get("artist"),
-            "album": song.get("album"),
-            "songid": status.get("songid"),
-            "duration": self.worker.resolve_duration(song, status),
-            "elapsed": float(status.get("elapsed") or 0),
-            "cover_name": self.worker.cover.cover_name(),
-            "media_image_url": self.worker.cover.cover_name(),
-        }
-
-        raw = json.dumps(data).encode("utf-8")
-
-        req.send_response(200)
-        req.send_header("Content-Type", "application/json")
-        req.send_header("Content-Length", str(len(raw)))
-        req.end_headers()
-        req.wfile.write(raw)
-
-    def handle_channels(self, req):
-        raw = json.dumps(enrich_channels_payload(self.channel_registry.get())).encode("utf-8")
-
-        req.send_response(200)
-        req.send_header("Content-Type", "application/json")
-        req.send_header("Cache-Control", "no-store")
-        req.send_header("Content-Length", str(len(raw)))
-        req.end_headers()
-        req.wfile.write(raw)
-
-    def handle_cover(self, req):
-        parsed = urlparse(req.path)
-        query = dict(parse_qsl(parsed.query))
-        name = query.get("name", "")
-
-        if not name or not COVER_NAME_RE.match(name):
-            req.send_response(404)
-            req.end_headers()
-            return
-
-        path = os.path.join(self.worker.cover.cover_dir, name)
-        cover_root = os.path.abspath(self.worker.cover.cover_dir)
-        if not os.path.abspath(path).startswith(cover_root + os.sep):
-            req.send_response(404)
-            req.end_headers()
-            return
-
-        if not os.path.exists(path):
-            req.send_response(404)
-            req.end_headers()
-            return
-
-        with open(path, "rb") as f:
-            data = f.read()
-
-        req.send_response(200)
-        req.send_header("Content-Type", "image/jpeg")
-        req.send_header("Cache-Control", "no-store")
-        req.send_header("Content-Length", str(len(data)))
-        req.end_headers()
-        req.wfile.write(data)
-
-    def handle_stationlogo(self, req):
-        parsed = urlparse(req.path)
-        query = dict(parse_qsl(parsed.query))
-        channel_id = query.get("channel", "").strip()
-
-        resolved = resolve_station_logo_path(channel_id)
-        if not resolved:
-            req.send_response(404)
-            req.end_headers()
-            return
-
-        path, content_type = resolved
-        with open(path, "rb") as f:
-            data = f.read()
-
-        req.send_response(200)
-        req.send_header("Content-Type", content_type)
-        req.send_header("Cache-Control", "no-store")
-        req.send_header("Content-Length", str(len(data)))
-        req.end_headers()
-        req.wfile.write(data)
-
-    def handle_changed(self, req):
-        raw = (self.worker.current_hash or "").encode("utf-8")
-        
-        req.send_response(200)
-        req.send_header("Content-Type", "text/plain; charset=utf-8")
-        req.send_header("Cache-Control", "no-store")
-        req.send_header("Content-Length", str(len(raw)))
-        req.end_headers()
-        req.wfile.write(raw)
-
-    def handle_health(self, req):
-        mpd_connected = self.worker.mpd.client is not None
-        mqtt_connected = bool(self.worker.mqtt and self.worker.mqtt.is_connected())
-        healthy = mpd_connected and mqtt_connected
-        data = {
-            "status": "ok" if healthy else "degraded",
-            "mpd": "connected" if mpd_connected else "disconnected",
-            "mqtt": "connected" if mqtt_connected else "disconnected",
-        }
-        raw = json.dumps(data).encode("utf-8")
-
-        req.send_response(200 if healthy else 503)
-        req.send_header("Content-Type", "application/json")
-        req.send_header("Cache-Control", "no-store")
-        req.send_header("Content-Length", str(len(raw)))
-        req.end_headers()
-        req.wfile.write(raw)
-
-# =========================
 # MAIN
 # =========================
 
 def main():
+    """Startet MPD-Worker, optional MQTT und HTTP-API."""
     logging.basicConfig(level=logging.INFO)
     logging.getLogger("mpd.base").setLevel(logging.WARNING)
-    validate_config()
 
     mpd = MPD()
     worker = Worker(mpd)
 
-    mqtt = create_mqtt(worker)
-    worker.mqtt = mqtt
+    if MQTT_ENABLED:
+        from mpdbackend_mqtt import MqttPublisher
+
+        env_path = os.getenv("MPDBACKEND_ENV_FILE", DEFAULT_ENV_FILE)
+        publisher = MqttPublisher(worker)
+        publisher.start(env_path)
+        worker.mqtt_publisher = publisher
+    else:
+        logger.info("MQTT disabled (MPDBACKEND_MQTT_ENABLED=false)")
 
     worker.start()
-    HTTPAPI(worker, CHANNEL_REGISTRY).start()
+
+    from mpdbackend_http import HTTPAPI
+
+    HTTPAPI(worker, CHANNEL_REGISTRY, mqtt_enabled=MQTT_ENABLED).start()
 
     while True:
         time.sleep(10)

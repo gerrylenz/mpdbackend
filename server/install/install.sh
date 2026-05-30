@@ -53,7 +53,7 @@ require_command() {
 
 validate_source_dir() {
     local missing=0
-    for file in mpdbackend.py channels.json.example systemd/mpdbackend.service systemd/mpdbackend.env.example install/install.sh install/requirements.txt; do
+    for file in mpdbackend.py mpdbackend_mqtt.py mpdbackend_http.py mpdbackend_cover.py channels.json.example systemd/mpdbackend.service systemd/mpdbackend.env.example install/install.sh install/requirements.txt; do
         if [[ ! -f "${SOURCE_DIR}/${file}" ]]; then
             echo "Missing in source directory (${SOURCE_DIR}): ${file}" >&2
             missing=1
@@ -70,6 +70,9 @@ copy_server_files() {
     mkdir -p "${INSTALL_DIR}/install" "${INSTALL_DIR}/systemd" "${INSTALL_DIR}/data/covers" "${INSTALL_DIR}/data/logos"
 
     install -m 644 "${SOURCE_DIR}/mpdbackend.py" "${INSTALL_DIR}/"
+    install -m 644 "${SOURCE_DIR}/mpdbackend_mqtt.py" "${INSTALL_DIR}/"
+    install -m 644 "${SOURCE_DIR}/mpdbackend_http.py" "${INSTALL_DIR}/"
+    install -m 644 "${SOURCE_DIR}/mpdbackend_cover.py" "${INSTALL_DIR}/"
     install -m 644 "${SOURCE_DIR}/channels.json.example" "${INSTALL_DIR}/"
 
     install -m 755 "${SOURCE_DIR}/install/install.sh" "${INSTALL_DIR}/install/"

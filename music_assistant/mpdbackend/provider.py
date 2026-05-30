@@ -351,13 +351,6 @@ class MPDBackendRadioProvider(MusicProvider):
         if cover_name and COVER_NAME_RE.match(cover_name):
             self.logger.debug("_cover_name_from_nowplaying cover_name: %s", cover_name)
             return cover_name
-
-        media_url = str(nowplaying.get("media_image_url") or "").strip()
-        if media_url:
-            filename = media_url.rsplit("/", 1)[-1].split("?", 1)[0]
-            if COVER_NAME_RE.match(filename):
-                self.logger.debug("Fallback cover_name %s", filename)
-                return filename
         return ""
 
     def _image_from_nowplaying(self, nowplaying: dict[str, Any]) -> MediaItemImage | None:
@@ -436,9 +429,9 @@ class MPDBackendRadioProvider(MusicProvider):
             await self._warm_cover_cache(cover_name)
         else:
             self.logger.info(
-                "TRACK CHANGE [%s] no cover in nowplaying (media_image_url=%r)",
+                "TRACK CHANGE [%s] no cover in nowplaying (cover_name=%r)",
                 channel_id,
-                nowplaying.get("media_image_url"),
+                nowplaying.get("cover_name"),
             )
 
     def _build_track_key(self, nowplaying: dict) -> str:

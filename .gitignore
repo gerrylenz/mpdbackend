@@ -7,5 +7,6 @@ server/channels.json
 server/mpdbackend.env
 server/install/mpd.conf
 *:token
+github_token
 *:Zone.Identifier
 *.log
