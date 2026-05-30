@@ -34,7 +34,8 @@ Each **MPD host** runs its own **mpdbackend server**. A shared **`channels.json`
 - **Cover art** from embedded tags (ID3/APIC), ffmpeg video stream, or folder images (`cover.jpg`)
 - **Station logos** per channel (`channel_0.png`, `channel_1.png`, …)
 - **Dynamic channel list** via `channels.json` (reload without restart)
-- **MQTT** state publishing (optional)
+- **MQTT** publishing and **remote MPD control** (optional, e.g. Home Assistant)
+- **Track duration** and **elapsed time** via MQTT (`M:SS` format)
 - **HTTP API**: `/nowplaying`, `/cover`, `/stationlogo`, `/channels`, `/health`
 - Chromecast-friendly metadata updates (playback sessions, image cache warming)
 
@@ -43,7 +44,10 @@ Each **MPD host** runs its own **mpdbackend server**. A shared **`channels.json`
 ```
 mpdbackend/
 ├── server/                    # Deploy on each MPD / workplayer host
-│   ├── mpdbackend.py
+│   ├── mpdbackend.py          # MPD worker, channel registry
+│   ├── mpdbackend_http.py     # HTTP API
+│   ├── mpdbackend_mqtt.py     # MQTT publish + MPD commands
+│   ├── mpdbackend_cover.py    # Cover extraction and cache
 │   ├── channels.json.example
 │   ├── install/
 │   │   ├── install.sh
@@ -139,9 +143,12 @@ In Music Assistant, configure **one backend URL** (default metadata server). Cha
 
 Settings are read from **`mpdbackend.env`** (next to `mpdbackend.py` or `/etc/mpdbackend.env` with systemd). No credentials are hardcoded in the Python source.
 
-Required:
+Set `MPDBACKEND_MQTT_ENABLED=false` to run HTTP-only (no broker required).
+
+When MQTT is enabled, these are required:
 
 ```bash
+MPDBACKEND_MQTT_ENABLED=true
 MPDBACKEND_MQTT_BROKER=mqtt.example.com
 MPDBACKEND_MQTT_USERNAME=user
 MPDBACKEND_MQTT_PASSWORD=secret
@@ -151,7 +158,11 @@ Common options:
 
 | Variable | Purpose |
 |----------|---------|
+| `MPDBACKEND_MQTT_ENABLED` | Enable MQTT publish and control (default: `true`) |
+| `MPDBACKEND_MQTT_TOPIC_*` | Topic names (see [MQTT](#mqtt) below) |
+| `MPDBACKEND_MQTT_ELAPSED_INTERVAL` | Elapsed publish interval in seconds (default: `1`) |
 | `MPDBACKEND_MPD_SOCKET` | MPD socket (default: `/run/mpd/socket`) |
+| `MPDBACKEND_PLAYLIST_DIR` | MPD playlist directory (optional; else from MPD config) |
 | `MPDBACKEND_MUSIC_ROOT` | Music library root for cover extraction |
 | `MPDBACKEND_COVER_DIR` | Cached cover JPEGs |
 | `MPDBACKEND_STATION_LOGO_DIR` | Station logo files |
@@ -165,12 +176,67 @@ See `server/systemd/mpdbackend.env.example` for the full list.
 
 | Endpoint | Description |
 |----------|-------------|
-| `GET /nowplaying` | Current MPD track metadata (JSON) |
+| `GET /nowplaying` | Current MPD track metadata (JSON, see below) |
 | `GET /cover?name=cover_….jpg` | Cached cover image |
 | `GET /stationlogo?channel=0` | Station logo for channel ID |
 | `GET /channels` | Channel registry (`channels.json`) |
 | `GET /health` | MPD/MQTT connection status |
 | `GET /hash` | State hash for change detection |
+
+**`/nowplaying` response** (example):
+
+```json
+{
+  "state": "play",
+  "title": "Song title",
+  "artist": "Artist",
+  "album": "Album",
+  "songid": "42",
+  "duration": 245.0,
+  "elapsed": 83.5,
+  "cover_name": "cover_a1b2c3.jpg"
+}
+```
+
+`duration` and `elapsed` are seconds (float). The Music Assistant provider uses `cover_name` for the image proxy.
+
+## MQTT
+
+When `MPDBACKEND_MQTT_ENABLED=true`, the server publishes status and accepts MPD control commands. Default topic prefix: `mpdbackend/` (all topics configurable via `MPDBACKEND_MQTT_TOPIC_*`).
+
+| Topic | Payload | Description |
+|-------|---------|-------------|
+| `mpdbackend/state` | JSON, retained | Track metadata: `state`, `title`, `artist`, `album`, `duration` (`M:SS`, e.g. `4:05`), `cover_name` |
+| `mpdbackend/elapsed` | Text, retained | Current position as `M:SS` or `H:MM:SS` (updated every `MPDBACKEND_MQTT_ELAPSED_INTERVAL` s) |
+| `mpdbackend/current` | JSON, retained | Queue context: `playlists`, `playlist`, `pos`, `file` |
+| `mpdbackend/cover` | JPEG binary, retained | Current cover image |
+| `mpdbackend/connected` | `online` / `offline`, retained | Availability (LWT for Home Assistant) |
+| `mpdbackend/cmd` | JSON subscribe | Remote MPD control (see below) |
+
+**`mpdbackend/state` example:**
+
+```json
+{
+  "state": "play",
+  "title": "Song title",
+  "artist": "Artist",
+  "album": "Album",
+  "duration": "4:05",
+  "cover_name": "cover_a1b2c3.jpg"
+}
+```
+
+**Control on `mpdbackend/cmd`** — publish JSON:
+
+```json
+{"player": "play"}
+{"player": "stop"}
+{"player": "next"}
+{"player": "back"}
+{"player": "loadplaylist", "playlist": "Pop.m3u"}
+```
+
+`playlist` is also accepted as alias for `loadplaylist`. After loading a playlist, `mpdbackend/current` reports the active playlist name.
 
 ## Development
 
