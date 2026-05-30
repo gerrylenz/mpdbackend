@@ -6,7 +6,7 @@ image:
 number:
   - unique_id: "mpd_workplayer_volume"
     name: "MPD Workplayer Volume"
-    state_topic: "mpdbackend/status"
+    state_topic: "mpdbackend/state"
     value_template: "{{ value_json.volume | default(0) | int }}"
     command_topic: "mpdbackend/cmd/volume"
     command_template: "{{ value | int }}"

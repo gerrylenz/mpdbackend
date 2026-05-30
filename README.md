@@ -212,16 +212,9 @@ When `MPDBACKEND_MQTT_ENABLED=true`, the server publishes status and accepts MPD
 | `mpdbackend/playlists` | JSON, retained | Available playlists: `playlists` (array) |
 | `mpdbackend/cover` | JPEG binary, retained | Current cover image |
 | `mpdbackend/connected` | `online` / `offline`, retained | Availability (LWT for Home Assistant) |
-| `mpdbackend/status` | JSON, retained | Volume: `volume` (0–100) |
-| `mpdbackend/cmd/volume` | text subscribe | Set volume: `45` (0–100) |
+| `mpdbackend/cmd/volume` | text subscribe | Set volume: `45` (0–100); `volume` is published on `state` |
 | `mpdbackend/cmd/player` | text subscribe | MPD transport: `play`, `stop`, `next`, `back` |
 | `mpdbackend/cmd/playlist` | text subscribe | Load playlist (payload = filename) |
-
-**`mpdbackend/status` example:**
-
-```json
-{"volume": 45}
-```
 
 **`mpdbackend/state` example:**
 

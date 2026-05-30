@@ -232,17 +232,6 @@ def format_playback_time(seconds: float) -> str:
     return f"{minutes}:{secs:02d}"
 
 
-def build_mpd_status_data(status: dict) -> dict:
-    """Baut Status-Daten aus MPD status() für MQTT mpdbackend/status."""
-    payload: dict = {
-        "lastloadedplaylist": parse_status_lastloadedplaylist(status),
-    }
-    volume = parse_status_volume(status)
-    if volume is not None:
-        payload["volume"] = volume
-    return payload
-
-
 # =========================
 # MPD
 # =========================
@@ -365,10 +354,6 @@ class MPD:
         if handler is None:
             return False
         return handler()
-
-    def status_dict(self) -> dict:
-        """Aktueller MPD-Status."""
-        return self.safe("status") or {}
 
     def _playlist_directory(self) -> str:
         """Ermittelt das MPD-Playlist-Verzeichnis (Env oder MPD config)."""
