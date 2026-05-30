@@ -30,7 +30,12 @@ TOPIC_STATE = os.getenv("MPDBACKEND_MQTT_TOPIC_STATE", "mpdbackend/state")
 TOPIC_COVER = os.getenv("MPDBACKEND_MQTT_TOPIC_COVER", "mpdbackend/cover")
 TOPIC_CURRENT = os.getenv("MPDBACKEND_MQTT_TOPIC_CURRENT", "mpdbackend/current")
 TOPIC_ELAPSED = os.getenv("MPDBACKEND_MQTT_TOPIC_ELAPSED", "mpdbackend/elapsed")
-TOPIC_CMD = os.getenv("MPDBACKEND_MQTT_TOPIC_CMD", "mpdbackend/cmd").strip("/")
+TOPIC_CMD_PLAYER = os.getenv(
+    "MPDBACKEND_MQTT_TOPIC_CMD_PLAYER", "mpdbackend/cmd/player"
+).strip("/")
+TOPIC_CMD_PLAYLIST = os.getenv(
+    "MPDBACKEND_MQTT_TOPIC_CMD_PLAYLIST", "mpdbackend/cmd/playlist"
+).strip("/")
 TOPIC_CONNECTED = os.getenv(
     "MPDBACKEND_MQTT_TOPIC_CONNECTED", "mpdbackend/connected"
 ).strip("/")
@@ -40,7 +45,7 @@ ELAPSED_INTERVAL = _elapsed_interval_raw if _elapsed_interval_raw > 0 else 1.0
 
 
 class PlayerCommand(StrEnum):
-    """MQTT JSON-Feld \"player\" auf mpdbackend/cmd."""
+    """MPD-Transportbefehle über MQTT."""
 
     PLAY = "play"
     STOP = "stop"
@@ -50,14 +55,23 @@ class PlayerCommand(StrEnum):
 
     @classmethod
     def parse(cls, raw: str) -> PlayerCommand | None:
-        """Parst player-String; \"playlist\" ist Alias für loadplaylist."""
+        """Parst play|stop|next|back aus Plain-Text-Payload."""
         normalized = raw.strip().lower()
-        if normalized == "playlist":
-            normalized = cls.LOADPLAYLIST.value
         try:
-            return cls(normalized)
+            command = cls(normalized)
         except ValueError:
             return None
+        if command is cls.LOADPLAYLIST:
+            return None
+        return command
+
+
+def parse_player_command(payload: bytes) -> PlayerCommand | None:
+    """Liest Befehl aus Plain-Text auf mpdbackend/cmd/player."""
+    text = payload.decode("utf-8", errors="replace").strip()
+    if not text:
+        return None
+    return PlayerCommand.parse(text)
 
 
 def format_elapsed(seconds: float) -> str:
@@ -157,22 +171,9 @@ def validate_mqtt_config(env_path: str = DEFAULT_ENV_FILE) -> None:
         sys.exit(1)
 
 
-def parse_player_command(payload: bytes) -> tuple[PlayerCommand | None, str]:
-    """Liest Befehl aus JSON: {\"player\":\"play|stop|next|back|loadplaylist\", \"playlist\":\"…\"}."""
-    text = payload.decode("utf-8", errors="replace").strip()
-    if not text.startswith("{"):
-        return None, ""
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError:
-        return None, ""
-    if not isinstance(data, dict):
-        return None, ""
-    raw_player = str(data.get("player") or "").strip()
-    playlist = str(data.get("playlist") or "").strip()
-    if not raw_player:
-        return None, playlist
-    return PlayerCommand.parse(raw_player), playlist
+def parse_playlist_name(payload: bytes) -> str:
+    """Liest Playlist-Namen aus Plain-Text auf mpdbackend/cmd/playlist."""
+    return payload.decode("utf-8", errors="replace").strip()
 
 
 def _transport_actions(mpd) -> dict[PlayerCommand, Callable[[], bool]]:
@@ -192,7 +193,7 @@ def dispatch_player_command(
 
     if command is PlayerCommand.LOADPLAYLIST:
         if not playlist:
-            logger.warning("loadplaylist on %s: missing playlist field", TOPIC_CMD)
+            logger.warning("loadplaylist on %s: empty playlist name", TOPIC_CMD_PLAYLIST)
             return
         if not mpd.load_and_play_playlist(playlist):
             logger.warning("Failed to load and play playlist: %s", playlist)
@@ -209,20 +210,39 @@ def dispatch_player_command(
 
 
 def handle_player_command(publisher: "MqttPublisher", payload: bytes) -> None:
-    """Führt einen JSON-Befehl von mpdbackend/cmd aus."""
-    command, playlist = parse_player_command(payload)
+    """Führt Befehl aus Plain-Text auf mpdbackend/cmd/player aus."""
+    command = parse_player_command(payload)
     if command is None:
-        logger.warning("Invalid command JSON on %s", TOPIC_CMD)
+        logger.warning("Invalid player command on %s", TOPIC_CMD_PLAYER)
         return
-    dispatch_player_command(publisher, command, playlist)
+    logger.info("MQTT command on %s: %s", TOPIC_CMD_PLAYER, command.value)
+    dispatch_player_command(publisher, command, "")
+
+
+def handle_playlist_command(publisher: "MqttPublisher", payload: bytes) -> None:
+    """Lädt Playlist aus Plain-Text auf mpdbackend/cmd/playlist."""
+    playlist = parse_playlist_name(payload)
+    if not playlist:
+        logger.warning("Empty playlist name on %s", TOPIC_CMD_PLAYLIST)
+        return
+    logger.info("MQTT command on %s: %s", TOPIC_CMD_PLAYLIST, playlist)
+    dispatch_player_command(publisher, PlayerCommand.LOADPLAYLIST, playlist)
 
 
 def _on_mqtt_command(_client, userdata, msg) -> None:
-    """Verarbeitet Steuerbefehle auf mpdbackend/cmd."""
-    if msg.topic != TOPIC_CMD:
-        logger.warning("Ignored MQTT message on %s (only %s)", msg.topic, TOPIC_CMD)
+    """Verarbeitet Steuerbefehle auf mpdbackend/cmd/player und …/playlist."""
+    if msg.topic == TOPIC_CMD_PLAYER:
+        handle_player_command(userdata, msg.payload)
         return
-    handle_player_command(userdata, msg.payload)
+    if msg.topic == TOPIC_CMD_PLAYLIST:
+        handle_playlist_command(userdata, msg.payload)
+        return
+    logger.warning(
+        "Ignored MQTT message on %s (only %s, %s)",
+        msg.topic,
+        TOPIC_CMD_PLAYER,
+        TOPIC_CMD_PLAYLIST,
+    )
 
 
 def _on_mqtt_connect(
@@ -239,7 +259,7 @@ def _on_mqtt_connect(
 
 
 def create_client(publisher: "MqttPublisher") -> mqtt_client.Client:
-    """Erstellt MQTT-Client, verbindet und abonniert mpdbackend/cmd."""
+    """Erstellt MQTT-Client, verbindet und abonniert Steuer-Topics."""
     client = mqtt_client.Client(mqtt_client.CallbackAPIVersion.VERSION2)
     client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
     client.user_data_set(publisher)
@@ -247,11 +267,11 @@ def create_client(publisher: "MqttPublisher") -> mqtt_client.Client:
     client.on_message = _on_mqtt_command
     client.will_set(TOPIC_CONNECTED, "offline", retain=True, qos=1)
     client.connect(MQTT_BROKER, MQTT_PORT, 60)
-    client.subscribe(TOPIC_CMD, qos=0)
-    logger.info("MQTT subscribed: %s (qos=0)", TOPIC_CMD)
+    client.subscribe([(TOPIC_CMD_PLAYER, 0), (TOPIC_CMD_PLAYLIST, 0)])
     logger.info(
-        "MQTT command payload: {\"player\":\"%s\",\"playlist\":\"…\"}",
-        "|".join(c.value for c in PlayerCommand),
+        "MQTT subscribed: %s (play|stop|next|back), %s (qos=0)",
+        TOPIC_CMD_PLAYER,
+        TOPIC_CMD_PLAYLIST,
     )
     client.loop_start()
     return client

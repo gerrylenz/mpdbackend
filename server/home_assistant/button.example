@@ -1,0 +1,62 @@
+type: horizontal-stack
+cards:
+  - show_name: false
+    show_icon: true
+    type: button
+    tap_action:
+      action: perform-action
+      data:
+        qos: "1"
+        topic: mpdbackend/cmd/player
+        payload: back
+      target: {}
+      perform_action: mqtt.publish
+    entity: switch.workplayer_back
+    icon: mdi:skip-previous
+    icon_height: 42px
+    name: Back
+  - show_name: false
+    show_icon: true
+    type: button
+    tap_action:
+      action: perform-action
+      data:
+        qos: "1"
+        topic: mpdbackend/cmd/player
+        payload: play
+      target: {}
+      perform_action: mqtt.publish
+    entity: switch.workplayer_play
+    icon: mdi:play
+    name: Play
+    icon_height: 42px
+  - show_name: false
+    show_icon: true
+    type: button
+    tap_action:
+      action: perform-action
+      data:
+        qos: "1"
+        topic: mpdbackend/cmd/player
+        payload: stop
+      target: {}
+      perform_action: mqtt.publish
+    entity: switch.workplayer_stop
+    icon: mdi:pause
+    name: Stop
+    icon_height: 42px
+  - show_name: false
+    show_icon: true
+    type: button
+    tap_action:
+      action: perform-action
+      data:
+        qos: "1"
+        topic: mpdbackend/cmd/player
+        payload: next
+      target: {}
+      perform_action: mqtt.publish
+    entity: switch.workplayer_next
+    icon: mdi:skip-next
+    icon_height: 42px
+    name: Next

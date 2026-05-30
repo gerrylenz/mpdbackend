@@ -1,0 +1,27 @@
+##################################################################################################################################  
+image:
+  - name: "MPD Cover"
+    image_topic: "mpdbackend/cover"
+##################################################################################################################################  
+number:
+  - unique_id: "mpd_workplayer_volume"
+    name: "MPD Workplayer Volume"
+    state_topic: "mpdbackend/status"
+    value_template: "{{ value_json.volume | default(0) | int }}"
+    command_topic: "mpdbackend/volume/set"
+    command_template: '{"volume": {{ value | int }} }'
+    min: 0
+    max: 100
+    step: 5
+    mode: slider
+  - unique_id: "mpd_home_volume"
+    name: "MPD Home Volume"
+    state_topic: "mpd/status"
+    value_template: "{{ value_json.volume | default(0) | int }}"
+    command_topic: "mpd//volume/set"
+    command_template: '{"volume": "{{ value | int }}" }'
+    min: 0
+    max: 100
+    step: 5
+    mode: slider
+##################################################################################################################################  

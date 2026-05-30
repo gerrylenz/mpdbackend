@@ -211,7 +211,8 @@ Bei `MPDBACKEND_MQTT_ENABLED=true` publiziert der Server Status und nimmt MPD-St
 | `mpdbackend/current` | JSON, retained | Queue-Kontext: `playlists`, `playlist`, `pos`, `file` |
 | `mpdbackend/cover` | JPEG-Binärdaten, retained | Aktuelles Cover-Bild |
 | `mpdbackend/connected` | `online` / `offline`, retained | Verfügbarkeit (LWT für Home Assistant) |
-| `mpdbackend/cmd` | JSON subscribe | MPD-Fernsteuerung (siehe unten) |
+| `mpdbackend/cmd/player` | Text subscribe | MPD-Transport: `play`, `stop`, `next`, `back` |
+| `mpdbackend/cmd/playlist` | Text subscribe | Playlist laden (Payload = Dateiname) |
 
 **Beispiel `mpdbackend/state`:**
 
@@ -226,17 +227,17 @@ Bei `MPDBACKEND_MQTT_ENABLED=true` publiziert der Server Status und nimmt MPD-St
 }
 ```
 
-**Steuerung auf `mpdbackend/cmd`** — JSON publizieren:
+**Steuerung** — Plain-Text publizieren:
 
-```json
-{"player": "play"}
-{"player": "stop"}
-{"player": "next"}
-{"player": "back"}
-{"player": "loadplaylist", "playlist": "Pop.m3u"}
-```
+| Topic | Payload |
+|-------|---------|
+| `mpdbackend/cmd/player` | `play` |
+| `mpdbackend/cmd/player` | `stop` |
+| `mpdbackend/cmd/player` | `next` |
+| `mpdbackend/cmd/player` | `back` |
+| `mpdbackend/cmd/playlist` | `Pop.m3u` |
 
-`playlist` ist Alias für `loadplaylist`. Nach dem Laden einer Playlist meldet `mpdbackend/current` den aktiven Playlist-Namen.
+Nach dem Laden einer Playlist meldet `mpdbackend/current` den aktiven Playlist-Namen.
 
 ## Entwicklung
 

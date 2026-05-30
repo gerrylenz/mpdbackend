@@ -211,7 +211,8 @@ When `MPDBACKEND_MQTT_ENABLED=true`, the server publishes status and accepts MPD
 | `mpdbackend/current` | JSON, retained | Queue context: `playlists`, `playlist`, `pos`, `file` |
 | `mpdbackend/cover` | JPEG binary, retained | Current cover image |
 | `mpdbackend/connected` | `online` / `offline`, retained | Availability (LWT for Home Assistant) |
-| `mpdbackend/cmd` | JSON subscribe | Remote MPD control (see below) |
+| `mpdbackend/cmd/player` | text subscribe | MPD transport: `play`, `stop`, `next`, `back` |
+| `mpdbackend/cmd/playlist` | text subscribe | Load playlist (payload = filename) |
 
 **`mpdbackend/state` example:**
 
@@ -226,17 +227,17 @@ When `MPDBACKEND_MQTT_ENABLED=true`, the server publishes status and accepts MPD
 }
 ```
 
-**Control on `mpdbackend/cmd`** — publish JSON:
+**Control** — publish plain text:
 
-```json
-{"player": "play"}
-{"player": "stop"}
-{"player": "next"}
-{"player": "back"}
-{"player": "loadplaylist", "playlist": "Pop.m3u"}
-```
+| Topic | Payload |
+|-------|---------|
+| `mpdbackend/cmd/player` | `play` |
+| `mpdbackend/cmd/player` | `stop` |
+| `mpdbackend/cmd/player` | `next` |
+| `mpdbackend/cmd/player` | `back` |
+| `mpdbackend/cmd/playlist` | `Pop.m3u` |
 
-`playlist` is also accepted as alias for `loadplaylist`. After loading a playlist, `mpdbackend/current` reports the active playlist name.
+After loading a playlist, `mpdbackend/current` reports the active playlist name.
 
 ## Development
 
