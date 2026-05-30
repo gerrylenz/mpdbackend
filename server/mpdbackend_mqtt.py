@@ -154,6 +154,9 @@ def dispatch_player_command(
             logger.warning("Failed to load and play playlist: %s", playlist)
             return
         publisher.set_loaded_playlist(playlist)
+        publisher.state_cache = None
+        song, status = publisher.worker.update_state()
+        publisher.worker.publish(song, status)
         return
 
     if not mpd.execute_player_action(command.value):
