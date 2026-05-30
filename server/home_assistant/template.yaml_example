@@ -1,0 +1,30 @@
+- select:
+    - unique_id: mpd_workplayer_playlist
+      name: mpd_workplayer_playlist
+      icon: mdi:playlist-music
+      options: >
+          {{ state_attr('sensor.mpd_workplayer_playlists', 'playlists')
+             | default([], true) | map('string') | list }}
+      state: >
+          {% set opts = state_attr('sensor.mpd_workplayer_playlists', 'playlists')
+             | default([], true) | map('string') | list %}
+          {% set active = state_attr('sensor.mpd_workplayer_current', 'playlist')
+             | default('', true) %}
+          {% if active in opts %}
+            {{ active }}
+          {% elif this.state in opts %}
+            {{ this.state }}
+          {% elif opts | length > 0 %}
+            {{ opts[0] }}
+          {% else %}
+            Laden...
+          {% endif %}
+      availability: >
+          {{ state_attr('sensor.mpd_workplayer_playlists', 'playlists')
+             | default([], true) | length > 0 }}
+      select_option:
+        - service: mqtt.publish
+          data:
+            topic: mpdbackend/cmd/playlist
+            payload: "{{ option }}"
+            qos: 0
