@@ -466,14 +466,23 @@ class Worker(threading.Thread):
         self.elapsed_sync_at = time.monotonic()
 
     def try_resync_elapsed(self) -> None:
-        """MPD-elapsed nachziehen (non-blocking, nutzt safe status)."""
-        status = self.mpd.safe("status") or {}
-        parsed = parse_status_elapsed(status)
-        if parsed is None:
+        """MPD-elapsed nachziehen; überspringt wenn idle die Verbindung blockiert."""
+        if not self.mpd.lock.acquire(blocking=False):
             return
-        with self.lock:
-            self.elapsed_sync_base = parsed
-            self.elapsed_sync_at = time.monotonic()
+        try:
+            if not self.mpd.client and not self.mpd.connect():
+                return
+            status = self.mpd.client.status() or {}
+            parsed = parse_status_elapsed(status)
+            if parsed is None:
+                return
+            with self.lock:
+                self.elapsed_sync_base = parsed
+                self.elapsed_sync_at = time.monotonic()
+        except Exception:
+            self.mpd.client = None
+        finally:
+            self.mpd.lock.release()
 
     def build_elapsed_status(self) -> dict:
         """Berechnet elapsed aus Sync-Punkt + Interpolation."""

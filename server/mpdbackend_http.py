@@ -79,6 +79,7 @@ class HTTPAPI:
         """GET /nowplaying – aktuelle Track-Metadaten als JSON."""
         song = self.worker.last_song or {}
         status = self.worker.last_status or {}
+        elapsed_status = self.worker.build_elapsed_status()
 
         data = {
             "state": status.get("state"),
@@ -87,7 +88,7 @@ class HTTPAPI:
             "album": song.get("album"),
             "songid": status.get("songid"),
             "duration": self.worker.resolve_duration(song, status),
-            "elapsed": float(status.get("elapsed") or 0),
+            "elapsed": float(elapsed_status.get("elapsed") or 0),
             "cover_name": self.worker.cover.cover_name(),
             "media_image_url": self.worker.cover.cover_name(),
         }
