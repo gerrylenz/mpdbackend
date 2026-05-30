@@ -206,13 +206,22 @@ Bei `MPDBACKEND_MQTT_ENABLED=true` publiziert der Server Status und nimmt MPD-St
 
 | Topic | Payload | Beschreibung |
 |-------|---------|--------------|
-| `mpdbackend/state` | JSON, retained | Track-Metadaten: `state`, `title`, `artist`, `album`, `duration` (`M:SS`, z. B. `4:05`), `cover_name` |
+| `mpdbackend/state` | JSON, retained | Track-Metadaten: `state`, `title`, `artist`, `album`, `duration` (`M:SS`), `cover_name`, `volume`, `lastloadedplaylist` |
 | `mpdbackend/elapsed` | Text, retained | Aktuelle Position als `M:SS` oder `H:MM:SS` (Update alle `MPDBACKEND_MQTT_ELAPSED_INTERVAL` s) |
-| `mpdbackend/current` | JSON, retained | Queue-Kontext: `playlists`, `playlist`, `pos`, `file` |
+| `mpdbackend/current` | JSON, retained | Queue-Kontext: `playlist`, `pos`, `file` |
+| `mpdbackend/playlists` | JSON, retained | Verfügbare Playlists: `playlists` (Array) |
 | `mpdbackend/cover` | JPEG-Binärdaten, retained | Aktuelles Cover-Bild |
 | `mpdbackend/connected` | `online` / `offline`, retained | Verfügbarkeit (LWT für Home Assistant) |
+| `mpdbackend/status` | JSON, retained | Lautstärke: `volume` (0–100) |
+| `mpdbackend/cmd/volume` | Text subscribe | Lautstärke setzen: `45` (0–100) |
 | `mpdbackend/cmd/player` | Text subscribe | MPD-Transport: `play`, `stop`, `next`, `back` |
 | `mpdbackend/cmd/playlist` | Text subscribe | Playlist laden (Payload = Dateiname) |
+
+**Beispiel `mpdbackend/status`:**
+
+```json
+{"volume": 45}
+```
 
 **Beispiel `mpdbackend/state`:**
 
@@ -223,7 +232,9 @@ Bei `MPDBACKEND_MQTT_ENABLED=true` publiziert der Server Status und nimmt MPD-St
   "artist": "Künstler",
   "album": "Album",
   "duration": "4:05",
-  "cover_name": "cover_a1b2c3.jpg"
+  "cover_name": "cover_a1b2c3.jpg",
+  "volume": 45,
+  "lastloadedplaylist": "Pop"
 }
 ```
 
@@ -237,7 +248,13 @@ Bei `MPDBACKEND_MQTT_ENABLED=true` publiziert der Server Status und nimmt MPD-St
 | `mpdbackend/cmd/player` | `back` |
 | `mpdbackend/cmd/playlist` | `Pop.m3u` |
 
-Nach dem Laden einer Playlist meldet `mpdbackend/current` den aktiven Playlist-Namen.
+**Lautstärke setzen** — Plain-Text auf `mpdbackend/cmd/volume`:
+
+```
+45
+```
+
+Nach dem Laden einer Playlist meldet `mpdbackend/current` den aktiven Playlist-Namen (`playlist`). Die Liste aller Playlists steht auf `mpdbackend/playlists`.
 
 ## Entwicklung
 

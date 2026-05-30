@@ -190,6 +190,60 @@ def logo_content_type(path: str) -> str:
 
 
 # =========================
+# MPD STATUS HELPERS
+# =========================
+
+def parse_status_volume(status: dict) -> int | None:
+    """Liest Lautstärke 0–100 aus MPD-Status; None wenn nicht vorhanden."""
+    if "volume" not in status:
+        return None
+    raw = str(status["volume"]).split(":")[0].strip()
+    try:
+        return max(0, min(100, int(float(raw))))
+    except (TypeError, ValueError):
+        return None
+
+
+def parse_status_lastloadedplaylist(status: dict) -> str:
+    """Liest lastloadedplaylist aus MPD-Status (leer wenn nicht gesetzt)."""
+    raw = status.get("lastloadedplaylist")
+    if not raw:
+        return ""
+    return str(raw).strip()
+
+
+def parse_status_elapsed(status: dict) -> float | None:
+    """Liest elapsed aus MPD-Status; None wenn das Feld fehlt."""
+    if "elapsed" not in status:
+        return None
+    try:
+        return max(0.0, float(status["elapsed"]))
+    except (TypeError, ValueError):
+        return None
+
+
+def format_playback_time(seconds: float) -> str:
+    """Formatiert Sekunden als M:SS oder H:MM:SS (z. B. 0:00, 3:45, 1:05:30)."""
+    total = max(0, int(seconds))
+    hours, remainder = divmod(total, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{secs:02d}"
+    return f"{minutes}:{secs:02d}"
+
+
+def build_mpd_status_data(status: dict) -> dict:
+    """Baut Status-Daten aus MPD status() für MQTT mpdbackend/status."""
+    payload: dict = {
+        "lastloadedplaylist": parse_status_lastloadedplaylist(status),
+    }
+    volume = parse_status_volume(status)
+    if volume is not None:
+        payload["volume"] = volume
+    return payload
+
+
+# =========================
 # MPD
 # =========================
 
@@ -294,6 +348,28 @@ class MPD:
         """Springt zum vorherigen Titel."""
         return self.run_command(lambda client: client.previous())
 
+    def set_volume(self, volume: int) -> bool:
+        """Setzt die MPD-Lautstärke (0–100)."""
+        level = max(0, min(100, int(volume)))
+        return self.run_command(lambda client: client.setvol(level))
+
+    def execute_player_action(self, action: str) -> bool:
+        """Führt play|stop|next|back aus."""
+        actions = {
+            "play": self.play,
+            "stop": self.stop,
+            "next": self.next_track,
+            "back": self.previous_track,
+        }
+        handler = actions.get(action)
+        if handler is None:
+            return False
+        return handler()
+
+    def status_dict(self) -> dict:
+        """Aktueller MPD-Status."""
+        return self.safe("status") or {}
+
     def _playlist_directory(self) -> str:
         """Ermittelt das MPD-Playlist-Verzeichnis (Env oder MPD config)."""
         if PLAYLIST_DIR and os.path.isdir(PLAYLIST_DIR):
@@ -383,13 +459,68 @@ class Worker(threading.Thread):
 
     def sync_elapsed_clock(self, status: dict) -> None:
         """Speichert MPD-elapsed als Referenz für die Interpolation."""
-        if "elapsed" not in status:
+        parsed = parse_status_elapsed(status)
+        if parsed is None:
             return
-        try:
-            self.elapsed_sync_base = max(0.0, float(status["elapsed"]))
-        except (TypeError, ValueError):
-            return
+        self.elapsed_sync_base = parsed
         self.elapsed_sync_at = time.monotonic()
+
+    def try_resync_elapsed(self) -> None:
+        """MPD-elapsed nachziehen (non-blocking, nutzt safe status)."""
+        status = self.mpd.safe("status") or {}
+        parsed = parse_status_elapsed(status)
+        if parsed is None:
+            return
+        with self.lock:
+            self.elapsed_sync_base = parsed
+            self.elapsed_sync_at = time.monotonic()
+
+    def build_elapsed_status(self) -> dict:
+        """Berechnet elapsed aus Sync-Punkt + Interpolation."""
+        with self.lock:
+            state = self.last_status.get("state")
+            songid = self.last_status.get("songid")
+            if state == "play":
+                elapsed = self.elapsed_sync_base + (
+                    time.monotonic() - self.elapsed_sync_at
+                )
+            else:
+                elapsed = self.elapsed_sync_base
+
+        return {"state": state, "songid": songid, "elapsed": max(0.0, elapsed)}
+
+    def build_track_state_data(self, song: dict, status: dict) -> dict:
+        """Track-Metadaten aus MPD für MQTT state-Topic."""
+        duration = self.resolve_duration(song, status)
+        duration_sec = int(duration) if duration else 0
+        payload = {
+            "state": status.get("state"),
+            "title": song.get("title"),
+            "artist": song.get("artist"),
+            "album": song.get("album"),
+            "duration": format_playback_time(duration_sec),
+            "cover_name": self.cover.cover_name(),
+            "lastloadedplaylist": parse_status_lastloadedplaylist(status),
+        }
+        volume = parse_status_volume(status)
+        if volume is not None:
+            payload["volume"] = volume
+        return payload
+
+    def build_playlists_data(self) -> dict:
+        """Verfügbare MPD-Playlists für MQTT playlists-Topic."""
+        return {"playlists": self.mpd.available_playlists()}
+
+    def build_queue_state_data(
+        self, song: dict, status: dict, loaded_playlist: str
+    ) -> dict:
+        """Queue-Kontext aus MPD für MQTT current-Topic."""
+        song_pos = status.get("song")
+        return {
+            "playlist": loaded_playlist,
+            "pos": int(song_pos) if song_pos is not None else None,
+            "file": song.get("file") or "",
+        }
 
     def resolve_duration(self, song, status):
         """Liefert Track-Dauer aus Song- oder Status-Metadaten."""

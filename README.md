@@ -206,13 +206,22 @@ When `MPDBACKEND_MQTT_ENABLED=true`, the server publishes status and accepts MPD
 
 | Topic | Payload | Description |
 |-------|---------|-------------|
-| `mpdbackend/state` | JSON, retained | Track metadata: `state`, `title`, `artist`, `album`, `duration` (`M:SS`, e.g. `4:05`), `cover_name` |
+| `mpdbackend/state` | JSON, retained | Track metadata: `state`, `title`, `artist`, `album`, `duration` (`M:SS`), `cover_name`, `volume`, `lastloadedplaylist` |
 | `mpdbackend/elapsed` | Text, retained | Current position as `M:SS` or `H:MM:SS` (updated every `MPDBACKEND_MQTT_ELAPSED_INTERVAL` s) |
-| `mpdbackend/current` | JSON, retained | Queue context: `playlists`, `playlist`, `pos`, `file` |
+| `mpdbackend/current` | JSON, retained | Queue context: `playlist`, `pos`, `file` |
+| `mpdbackend/playlists` | JSON, retained | Available playlists: `playlists` (array) |
 | `mpdbackend/cover` | JPEG binary, retained | Current cover image |
 | `mpdbackend/connected` | `online` / `offline`, retained | Availability (LWT for Home Assistant) |
+| `mpdbackend/status` | JSON, retained | Volume: `volume` (0–100) |
+| `mpdbackend/cmd/volume` | text subscribe | Set volume: `45` (0–100) |
 | `mpdbackend/cmd/player` | text subscribe | MPD transport: `play`, `stop`, `next`, `back` |
 | `mpdbackend/cmd/playlist` | text subscribe | Load playlist (payload = filename) |
+
+**`mpdbackend/status` example:**
+
+```json
+{"volume": 45}
+```
 
 **`mpdbackend/state` example:**
 
@@ -223,7 +232,9 @@ When `MPDBACKEND_MQTT_ENABLED=true`, the server publishes status and accepts MPD
   "artist": "Artist",
   "album": "Album",
   "duration": "4:05",
-  "cover_name": "cover_a1b2c3.jpg"
+  "cover_name": "cover_a1b2c3.jpg",
+  "volume": 45,
+  "lastloadedplaylist": "Pop"
 }
 ```
 
@@ -237,7 +248,13 @@ When `MPDBACKEND_MQTT_ENABLED=true`, the server publishes status and accepts MPD
 | `mpdbackend/cmd/player` | `back` |
 | `mpdbackend/cmd/playlist` | `Pop.m3u` |
 
-After loading a playlist, `mpdbackend/current` reports the active playlist name.
+**Set volume** — plain text on `mpdbackend/cmd/volume`:
+
+```
+45
+```
+
+After loading a playlist, `mpdbackend/current` reports the active playlist name (`playlist`). All available playlists are on `mpdbackend/playlists`.
 
 ## Development
 
