@@ -7,31 +7,52 @@ MPD spielt lokale Dateien oder Playlists; ein Icecast-/HTTP-Stream sendet das Au
 
 ## Architektur
 
+**Regel:** Jede mpdbackend-Instanz verbindet sich mit **genau einem** MPD-Socket (`MPDBACKEND_MPD_SOCKET`). Mehrere MPD-Prozesse → mehrere mpdbackend-Prozesse (eigener Socket, HTTP-Port und Env pro Instanz).
+
 ```
-┌─────────────┐
-│   MPD #0    │──┐
-└─────────────┘  │
-┌─────────────┐  │  idle/events    ┌──────────────────┐     HTTP/MQTT    ┌─────────────────┐
-│   MPD #1    │──┼────────────────►│  mpdbackend.py   │◄─────────────────│ Music Assistant │
-└─────────────┘  │                 │  (server/)       │    /nowplaying   │  (provider/)    │
-┌─────────────┐  │                 └────────┬─────────┘    /cover        └───────┬─────────┘
-│   MPD #2    │──┘                          │                                    │
-└─────────────┘              ┌──────────────┼──────────────┐                     │ Wiedergabe
-                             │              │              │                     ▼
-                      Browser│         Icecast / HTTP      │              Chromecast / …
-                      :4533/ │              │              │
-                             ▼              ▼              ▼
-                        Web-Player    stream 0..2    MQTT (optional)
-                                        ▲
-                                        └── Audio-Stream (getrennt von Metadaten)
+                         ┌──────────────────────────────────────┐
+                         │   Music Assistant (1× Provider)    │
+                         │   Kanäle aus channels.json           │
+                         └─────────────────┬────────────────────┘
+                                           │ /nowplaying, /cover …
+              ┌────────────────────────────┼────────────────────────────┐
+              │                            │                            │
+              ▼                            ▼                            ▼
+       ┌─────────────┐              ┌─────────────┐              ┌─────────────┐
+       │ mpdbackend  │              │ mpdbackend  │              │ mpdbackend  │
+       │ :4533       │              │ :4534       │              │ :4535       │
+       │ Web-Player  │              │ Web-Player  │              │ Web-Player  │
+       └──────┬──────┘              └──────┬──────┘              └──────┬──────┘
+              │ 1:1                       │ 1:1                       │ 1:1
+              ▼                           ▼                           ▼
+       ┌─────────────┐              ┌─────────────┐              ┌─────────────┐
+       │  MPD #0     │              │  MPD #1     │              │  MPD #2     │
+       │  (Pop)      │              │  (Rock)     │              │  (Chill)    │
+       └──────┬──────┘              └──────┬──────┘              └──────┬──────┘
+              │ stream_url 0             │ stream_url 1             │ stream_url 2
+              ▼                          ▼                          ▼
+         HTTP-Stream                 HTTP-Stream                 HTTP-Stream
+      (MPD httpd / Icecast)      (MPD httpd / Icecast)      (MPD httpd / Icecast)
+              ▲                          ▲                          ▲
+              └── Audio getrennt von Metadaten (mpdbackend liefert nur Anzeige/Steuerung)
 ```
 
 | Komponente | Aufgabe |
 |------------|---------|
-| **`server/`** | Pro MPD-Host eine Instanz: liest MPD-Status, extrahiert Cover, stellt HTTP-API bereit |
-| **`music_assistant/`** | Music-Assistant-Provider: lädt Kanäle, holt Metadaten, aktualisiert Player |
+| **`server/`** | **1× pro MPD-Instanz:** liest genau einen MPD-Status, extrahiert Cover, stellt HTTP-API und Web-Player bereit |
+| **`music_assistant/`** | **1× insgesamt:** Provider lädt `channels.json` und holt Metadaten pro Kanal von der jeweiligen `backend_url` |
 
-Pro **MPD-Host** läuft eine eigene **mpdbackend-Server-Instanz**. Eine gemeinsame **`channels.json`** listet alle Radiosender (`0`, `1`, `2`, …); jeder Kanal hat eigene `stream_url` und optional `backend_url`.
+### Ein MPD = ein mpdbackend
+
+| Situation | mpdbackend-Instanzen |
+|-----------|----------------------|
+| 1 Rechner, **1 MPD** | **1×** (Standard) |
+| 1 Rechner, **mehrere MPD** (z. B. Pop/Rock/Chill, je eigener Socket) | **1× pro MPD** — unterschiedliche `MPDBACKEND_MPD_SOCKET`, `MPDBACKEND_HTTP_PORT`, eigene `mpdbackend.env` / systemd-Unit |
+| **Mehrere Rechner**, je 1 MPD | **1× pro Rechner** |
+
+Eine gemeinsame **`channels.json`** (z. B. auf dem Music-Assistant-Host) listet alle Sender (`0`, `1`, `2`, …). Jeder Kanal verweist mit `stream_url` auf den **Audio-Stream** und mit `backend_url` auf den **mpdbackend**, der zu diesem MPD gehört — auch wenn mehrere MPD auf demselben Rechner laufen (dann z. B. `:4533`, `:4534`, `:4535`).
+
+**Nicht nötig:** pro Browser, Hörer oder Music-Assistant-Player eine eigene mpdbackend-Instanz.
 
 ## Funktionen
 
@@ -49,7 +70,7 @@ Pro **MPD-Host** läuft eine eigene **mpdbackend-Server-Instanz**. Eine gemeinsa
 
 ```
 mpdbackend/
-├── server/                    # Auf jedem MPD-/Workplayer-Host deployen
+├── server/                    # Pro MPD-Instanz deployen (1× mpdbackend je MPD-Socket)
 │   ├── mpdbackend.py          # MPD-Worker, Kanal-Registry
 │   ├── mpdbackend_http.py     # HTTP-API
 │   ├── mpdbackend_mqtt.py     # MQTT-Publish + MPD-Befehle
@@ -150,6 +171,18 @@ In Music Assistant **eine Backend-URL** konfigurieren (Standard-Metadaten-Server
 | `backend_url` | Optional; Metadaten-Server für diesen Kanal |
 
 **Wichtig:** `stream_url` liefert das **Audio**, `backend_url` bzw. `:4533` liefert **Metadaten und Steuerung**. Beides wird für den Web-Player benötigt.
+
+### Mehrere MPD auf einem Rechner
+
+Beispiel (siehe auch `server/install/mpd.conf_example`):
+
+| Kanal | MPD-Socket | mpdbackend-Port | `backend_url` |
+|-------|------------|-----------------|---------------|
+| `"0"` Pop | `/run/mpd-pop/socket` | `4533` | `http://192.168.1.10:4533` |
+| `"1"` Rock | `/run/mpd-rock/socket` | `4534` | `http://192.168.1.10:4534` |
+| `"2"` Chill | `/run/mpd-chill/socket` | `4535` | `http://192.168.1.10:4535` |
+
+Pro Instanz: eigene `mpdbackend.env` (Socket, Port, Pfade) und eigener systemd-Dienst — oder manuell mit getrennten Installationsverzeichnissen.
 
 ## Konfiguration (Server)
 

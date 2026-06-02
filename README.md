@@ -7,31 +7,52 @@ MPD plays local files or playlists; an Icecast/HTTP stream broadcasts the audio.
 
 ## Architecture
 
+**Rule:** Each mpdbackend instance connects to **exactly one** MPD socket (`MPDBACKEND_MPD_SOCKET`). Multiple MPD processes → multiple mpdbackend processes (separate socket, HTTP port, and env per instance).
+
 ```
-┌─────────────┐
-│   MPD #0    │──┐
-└─────────────┘  │
-┌─────────────┐  │  idle/events    ┌──────────────────┐     HTTP/MQTT    ┌─────────────────┐
-│   MPD #1    │──┼────────────────►│  mpdbackend.py   │◄─────────────────│ Music Assistant │
-└─────────────┘  │                 │  (server/)       │    /nowplaying   │  (provider/)    │
-┌─────────────┐  │                 └────────┬─────────┘    /cover        └───────┬─────────┘
-│   MPD #2    │──┘                          │                                    │
-└─────────────┘              ┌──────────────┼──────────────┐                     │ playback
-                             │              │              │                     ▼
-                      Browser│         Icecast / HTTP      │              Chromecast / …
-                      :4533/ │              │              │
-                             ▼              ▼              ▼
-                        Web player    stream 0..2    MQTT (optional)
-                                        ▲
-                                        └── audio stream (separate from metadata)
+                         ┌──────────────────────────────────────┐
+                         │   Music Assistant (1× provider)      │
+                         │   channels from channels.json          │
+                         └─────────────────┬────────────────────┘
+                                           │ /nowplaying, /cover …
+              ┌────────────────────────────┼────────────────────────────┐
+              │                            │                            │
+              ▼                            ▼                            ▼
+       ┌─────────────┐              ┌─────────────┐              ┌─────────────┐
+       │ mpdbackend  │              │ mpdbackend  │              │ mpdbackend  │
+       │ :4533       │              │ :4534       │              │ :4535       │
+       │ web player  │              │ web player  │              │ web player  │
+       └──────┬──────┘              └──────┬──────┘              └──────┬──────┘
+              │ 1:1                       │ 1:1                       │ 1:1
+              ▼                           ▼                           ▼
+       ┌─────────────┐              ┌─────────────┐              ┌─────────────┐
+       │  MPD #0     │              │  MPD #1     │              │  MPD #2     │
+       │  (Pop)      │              │  (Rock)     │              │  (Chill)    │
+       └──────┬──────┘              └──────┬──────┘              └──────┬──────┘
+              │ stream_url 0             │ stream_url 1             │ stream_url 2
+              ▼                          ▼                          ▼
+         HTTP stream                 HTTP stream                 HTTP stream
+      (MPD httpd / Icecast)      (MPD httpd / Icecast)      (MPD httpd / Icecast)
+              ▲                          ▲                          ▲
+              └── audio separate from metadata (mpdbackend = display/control only)
 ```
 
 | Component | Role |
 |-----------|------|
-| **`server/`** | One instance per MPD host: reads MPD state, extracts covers, exposes HTTP API |
-| **`music_assistant/`** | Music Assistant provider: loads channels, fetches metadata, pushes updates to players |
+| **`server/`** | **1× per MPD instance:** reads one MPD state, extracts covers, exposes HTTP API and web player |
+| **`music_assistant/`** | **1× total:** provider loads `channels.json` and fetches metadata per channel from each `backend_url` |
 
-Each **MPD host** runs its own **mpdbackend server**. A shared **`channels.json`** lists all radio channels (`0`, `1`, `2`, …); each channel has its own `stream_url` and optional `backend_url`.
+### One MPD = one mpdbackend
+
+| Scenario | mpdbackend instances |
+|----------|----------------------|
+| 1 machine, **1 MPD** | **1×** (typical setup) |
+| 1 machine, **multiple MPD** (e.g. Pop/Rock/Chill, separate sockets) | **1× per MPD** — different `MPDBACKEND_MPD_SOCKET`, `MPDBACKEND_HTTP_PORT`, own `mpdbackend.env` / systemd unit |
+| **Multiple machines**, 1 MPD each | **1× per machine** |
+
+A shared **`channels.json`** (e.g. on the Music Assistant host) lists all stations (`0`, `1`, `2`, …). Each channel uses `stream_url` for **audio** and `backend_url` for the **mpdbackend** tied to that MPD — even when several MPD run on the same host (then e.g. `:4533`, `:4534`, `:4535`).
+
+**Not required:** a separate mpdbackend per browser, listener, or Music Assistant player.
 
 ## Features
 
@@ -49,7 +70,7 @@ Each **MPD host** runs its own **mpdbackend server**. A shared **`channels.json`
 
 ```
 mpdbackend/
-├── server/                    # Deploy on each MPD / workplayer host
+├── server/                    # Deploy per MPD instance (1× mpdbackend per MPD socket)
 │   ├── mpdbackend.py          # MPD worker, channel registry
 │   ├── mpdbackend_http.py     # HTTP API
 │   ├── mpdbackend_mqtt.py     # MQTT publish + MPD commands
@@ -150,6 +171,18 @@ In Music Assistant, configure **one backend URL** (default metadata server). Cha
 | `backend_url` | Optional; metadata server for this channel |
 
 **Note:** `stream_url` carries **audio**; `backend_url` or `:4533` carries **metadata and control**. The web player needs both.
+
+### Multiple MPD on one machine
+
+Example (see also `server/install/mpd.conf_example`):
+
+| Channel | MPD socket | mpdbackend port | `backend_url` |
+|---------|------------|-----------------|---------------|
+| `"0"` Pop | `/run/mpd-pop/socket` | `4533` | `http://192.168.1.10:4533` |
+| `"1"` Rock | `/run/mpd-rock/socket` | `4534` | `http://192.168.1.10:4534` |
+| `"2"` Chill | `/run/mpd-chill/socket` | `4535` | `http://192.168.1.10:4535` |
+
+Per instance: own `mpdbackend.env` (socket, port, paths) and own systemd service — or separate install directories when running manually.
 
 ## Configuration (server)
 
