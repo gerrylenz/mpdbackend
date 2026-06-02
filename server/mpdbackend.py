@@ -282,24 +282,49 @@ def build_mpd_status_data(status: dict) -> dict:
 # =========================
 
 class MPD:
-    """Thread-sicherer MPD-Client über Unix-Socket."""
+    """MPD-Zugriff über Unix-Socket (idle- und Befehls-Verbindung getrennt)."""
 
     def __init__(self):
         """Initialisiert Client-Zustand und Playlist-Cache."""
         self.client = None
+        self.command_client = None
         self.lock = threading.Lock()
         self._playlists_cache: list[str] | None = None
         self._playlists_dir_mtime: float | None = None
 
-    def connect(self):
-        """Stellt Verbindung zum MPD-Socket her."""
+    def _new_client(self) -> MPDClient:
+        client = MPDClient()
+        client.timeout = 5
+        client.connect(MPD_SOCKET)
+        return client
+
+    def connect(self) -> bool:
+        """Stellt Idle- und Befehls-Verbindung zum MPD-Socket her."""
         try:
-            self.client = MPDClient()
-            self.client.timeout = 5
-            self.client.connect(MPD_SOCKET)
+            self.client = self._new_client()
+            self.command_client = self._new_client()
             return True
         except Exception:
             self.client = None
+            self.command_client = None
+            return False
+
+    def connect_idle(self) -> bool:
+        """Verbindet nur die Idle-Verbindung (Worker-Events)."""
+        try:
+            self.client = self._new_client()
+            return True
+        except Exception:
+            self.client = None
+            return False
+
+    def connect_command(self) -> bool:
+        """Verbindet nur die Befehls-Verbindung (MQTT, elapsed-resync)."""
+        try:
+            self.command_client = self._new_client()
+            return True
+        except Exception:
+            self.command_client = None
             return False
 
     def safe(self, cmd, *args, default=None):
@@ -316,31 +341,32 @@ class MPD:
                 return default
 
     def idle(self):
-        """Wartet auf MPD-Events (gesperrter Zugriff, keine parallelen Befehle)."""
+        """Wartet auf MPD-Events; Lock nur für Connect, nicht während blockierendem idle."""
         with self.lock:
             try:
-                if not self.client and not self.connect():
+                if not self.client and not self.connect_idle():
                     return None
-                return self.client.idle()
+                client = self.client
             except Exception:
                 self.client = None
                 return None
+        try:
+            return client.idle()
+        except Exception:
+            self.client = None
+            return None
 
     def run_command(self, action):
-        """Führt eine MPD-Aktion aus (beendet idle, damit Befehle nicht blockieren)."""
+        """Führt eine MPD-Aktion auf der separaten Befehls-Verbindung aus."""
         with self.lock:
             try:
-                if not self.client and not self.connect():
+                if not self.command_client and not self.connect_command():
                     return False
-                try:
-                    self.client.noidle()
-                except Exception:
-                    pass
-                action(self.client)
+                action(self.command_client)
                 return True
             except Exception as err:
                 logger.warning("MPD command failed: %s", err)
-                self.client = None
+                self.command_client = None
                 return False
 
     @staticmethod
@@ -358,6 +384,7 @@ class MPD:
             return False
 
         def _load_play(client):
+            client.clear()
             client.load(mpd_name)
             client.play()
 
@@ -399,10 +426,6 @@ class MPD:
         if handler is None:
             return False
         return handler()
-
-    def status_dict(self) -> dict:
-        """Aktueller MPD-Status."""
-        return self.safe("status") or {}
 
     def _playlist_directory(self) -> str:
         """Ermittelt das MPD-Playlist-Verzeichnis (Env oder MPD config)."""
@@ -500,23 +523,21 @@ class Worker(threading.Thread):
         self.elapsed_sync_at = time.monotonic()
 
     def try_resync_elapsed(self) -> None:
-        """MPD-elapsed nachziehen; blockiert nicht, wenn die Verbindung in idle hängt."""
-        if not self.mpd.lock.acquire(blocking=False):
+        """MPD-elapsed über die Befehls-Verbindung nachziehen."""
+        with self.mpd.lock:
+            try:
+                if not self.mpd.command_client and not self.mpd.connect_command():
+                    return
+                status = self.mpd.command_client.status() or {}
+            except Exception:
+                self.mpd.command_client = None
+                return
+        parsed = parse_status_elapsed(status)
+        if parsed is None:
             return
-        try:
-            if not self.mpd.client and not self.mpd.connect():
-                return
-            status = self.mpd.client.status() or {}
-            parsed = parse_status_elapsed(status)
-            if parsed is None:
-                return
-            with self.lock:
-                self.elapsed_sync_base = parsed
-                self.elapsed_sync_at = time.monotonic()
-        except Exception:
-            self.mpd.client = None
-        finally:
-            self.mpd.lock.release()
+        with self.lock:
+            self.elapsed_sync_base = parsed
+            self.elapsed_sync_at = time.monotonic()
 
     def build_elapsed_status(self) -> dict:
         """Berechnet elapsed aus Sync-Punkt + Interpolation."""
@@ -652,7 +673,7 @@ class Worker(threading.Thread):
 
         while not self.stop_flag:
             try:
-                if not self.mpd.client and not self.mpd.connect():
+                if not self.mpd.client and not self.mpd.connect_idle():
                     time.sleep(2)
                     continue
                 self.mpd.idle()

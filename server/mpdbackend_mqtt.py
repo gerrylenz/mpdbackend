@@ -16,7 +16,7 @@ from enum import StrEnum
 
 from paho.mqtt import client as mqtt_client
 
-from mpdbackend import build_mpd_status_data, format_playback_time
+from mpdbackend import format_playback_time
 
 logger = logging.getLogger("mpdbackend.mqtt")
 
@@ -34,7 +34,6 @@ TOPIC_PLAYLISTS = os.getenv(
     "MPDBACKEND_MQTT_TOPIC_PLAYLISTS", "mpdbackend/playlists"
 ).strip("/")
 TOPIC_ELAPSED = os.getenv("MPDBACKEND_MQTT_TOPIC_ELAPSED", "mpdbackend/elapsed")
-TOPIC_STATUS = os.getenv("MPDBACKEND_MQTT_TOPIC_STATUS", "mpdbackend/status").strip("/")
 TOPIC_CMD_VOLUME = os.getenv(
     "MPDBACKEND_MQTT_TOPIC_CMD_VOLUME", "mpdbackend/cmd/volume"
 ).strip("/")
@@ -155,6 +154,9 @@ def dispatch_player_command(
             logger.warning("Failed to load and play playlist: %s", playlist)
             return
         publisher.set_loaded_playlist(playlist)
+        publisher.state_cache = None
+        song, status = publisher.worker.update_state()
+        publisher.worker.publish(song, status)
         return
 
     if not mpd.execute_player_action(command.value):
@@ -191,7 +193,9 @@ def handle_volume_command(publisher: "MqttPublisher", payload: bytes) -> None:
     if not publisher.worker.mpd.set_volume(volume):
         logger.warning("MPD setvol failed: %s", volume)
         return
-    publisher.publish_status(publisher.worker.mpd.status_dict())
+    publisher.state_cache = None
+    song, status = publisher.worker.update_state()
+    publisher.worker.publish(song, status)
 
 
 def _on_mqtt_command(_client, userdata, msg) -> None:
@@ -262,7 +266,6 @@ class MqttPublisher:
         self.state_cache = None
         self.current_cache = None
         self.playlists_cache = None
-        self.status_cache = None
         self.elapsed_cache: str | None = None
         self.last_cover_hash = ""
         self.loaded_playlist = ""
@@ -276,12 +279,11 @@ class MqttPublisher:
         self._elapsed_thread.start()
         logger.info("MQTT enabled (broker %s:%s)", MQTT_BROKER, MQTT_PORT)
         logger.info(
-            "MQTT publish: %s, %s, %s, %s, %s",
+            "MQTT publish: %s, %s, %s, %s",
             TOPIC_STATE,
             TOPIC_CURRENT,
             TOPIC_PLAYLISTS,
             TOPIC_ELAPSED,
-            TOPIC_STATUS,
         )
         logger.info("MQTT availability: %s", TOPIC_CONNECTED)
 
@@ -292,18 +294,6 @@ class MqttPublisher:
         """Merkt per MQTT geladene Playlist für current-Topic."""
         self.loaded_playlist = name
         self.current_cache = None
-
-    def publish_status(self, status: dict) -> None:
-        """Publiziert mpdbackend/status bei Änderung."""
-        if not self.client:
-            return
-
-        payload = build_mpd_status_data(status)
-        if payload == self.status_cache:
-            return
-
-        self.status_cache = payload
-        self.client.publish(TOPIC_STATUS, json.dumps(payload), qos=0, retain=True)
 
     def publish_playlists(self) -> None:
         """Publiziert mpdbackend/playlists bei Änderung."""
@@ -363,7 +353,7 @@ class MqttPublisher:
     def publish(
         self, song: dict, status: dict, state_payload: dict, music_root: str
     ) -> None:
-        """Publiziert state, current, status und Cover bei Änderungen."""
+        """Publiziert state, current und Cover bei Änderungen."""
         if not self.client:
             return
 
@@ -380,5 +370,4 @@ class MqttPublisher:
             self.client.publish(TOPIC_CURRENT, json.dumps(current_payload), retain=True)
 
         self.publish_playlists()
-        self.publish_status(status)
         self.publish_current_cover(song.get("file"), music_root)
