@@ -247,7 +247,7 @@ Häufige Optionen:
 | `MPDBACKEND_PUBLIC_BASE_URL` | Öffentliche URL dieses Backends |
 | `MPDBACKEND_HTTP_PORT` | HTTP-Port (Standard: `4533`) |
 | `MPDBACKEND_WEB_DIR` | Pfad zum Web-Player (Standard: `server/web/`) |
-| `MPDBACKEND_WEB_PASSWORD` | Passwort nur für Web-Player-Seite im Browser (`/`, CSS, JS); HTTP-API ohne Auth |
+| `MPDBACKEND_WEB_PASSWORD` | Passwort für Web-Player-Seite: Aufruf mit `/?password=…` (nur Browser-UI; API offen) |
 | `MPDBACKEND_MARKED_FOR_DELETE` | Zieldatei für „Zum Löschen markieren“ (Standard: `data/mark_for_delete.cfg`) |
 
 Vollständige Liste: `server/systemd/mpdbackend.env.example`
@@ -256,7 +256,7 @@ Vollständige Liste: `server/systemd/mpdbackend.env.example`
 
 Unter **`http://host:4533/`** liefert mpdbackend eine responsive Web-Oberfläche — Layout und Schriftgrößen passen sich der Viewport-Größe des aufrufenden Geräts an (`clamp`, `vmin`, `dvh`; Portrait, Querformat, verschiedene Displaygrößen):
 
-**Absicherung:** `MPDBACKEND_WEB_PASSWORD` in `mpdbackend.env` setzen → beim Aufruf der Web-Player-Seite im Browser Passwort abfragen (nur `/`, CSS, JS). Im Dialog **Benutzername leer lassen**. HTTP-API (`/nowplaying`, `/playlists`, `/cmd/*`, …) bleibt **ohne** Passwort erreichbar.
+**Absicherung:** `MPDBACKEND_WEB_PASSWORD` setzen → Web-Player nur mit Passwort in der URL, z. B. `http://host:4533/?password=geheim`. Nach dem ersten Aufruf setzt der Server ein Cookie (CSS/JS ohne Passwort in der URL). HTTP-API (`/nowplaying`, `/playlists`, `/cmd/*`, …) bleibt **ohne** Passwort erreichbar.
 
 - **Anzeige:** Cover, Titel, Künstler, Album, Fortschritt (elapsed/duration), Track-Position in der Playlist
 - **Sender:** Kanalauswahl über `channels.json` (Logo + `stream_url`)
@@ -281,7 +281,7 @@ Ein externer Job kann diese Datei auslesen und den Eintrag verarbeiten (z. B. 
 
 | Endpoint | Beschreibung |
 |----------|--------------|
-| `GET /` | Web-Player (statische Dateien; Passwort nur hier im Browser, wenn gesetzt) |
+| `GET /` | Web-Player (statische Dateien; mit `/?password=…` wenn gesetzt) |
 | `GET /nowplaying` | Aktuelle MPD-Metadaten (JSON, siehe unten) |
 | `GET /playlists` | Verfügbare MPD-Playlists und aktive Playlist |
 | `GET /cover?name=cover_….jpg` | Gecachtes Cover |

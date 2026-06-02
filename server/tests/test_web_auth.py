@@ -1,37 +1,48 @@
-import base64
-
 import mpdbackend_http as http
 
 
 def test_web_auth_disabled_without_password(monkeypatch):
     monkeypatch.setattr(http, "WEB_PASSWORD", "")
+
+    class Req:
+        path = "/"
+        headers = {}
+
     assert http.web_auth_enabled() is False
-    assert http.path_requires_web_auth("/") is True
-    assert http.path_requires_web_auth("/nowplaying") is False
+    assert http.evaluate_web_static_access(Req()) == (True, False, None)
 
 
-def test_web_auth_validates_password_only(monkeypatch):
+def test_web_auth_via_query_password(monkeypatch):
     monkeypatch.setattr(http, "WEB_PASSWORD", "secret")
 
     class Req:
-        headers = {
-            "Authorization": "Basic "
-            + base64.b64encode(b":secret").decode("ascii")
-        }
+        path = "/?password=secret"
+        headers = {}
 
-    assert http.web_auth_valid(Req()) is True
-
-    class BadReq:
-        headers = {
-            "Authorization": "Basic "
-            + base64.b64encode(b":wrong").decode("ascii")
-        }
-
-    assert http.web_auth_valid(BadReq()) is False
+    assert http.evaluate_web_static_access(Req()) == (True, True, "/")
 
 
-def test_only_static_files_protected(monkeypatch):
-    monkeypatch.setattr(http, "WEB_PASSWORD", "x")
+def test_web_auth_via_cookie(monkeypatch):
+    monkeypatch.setattr(http, "WEB_PASSWORD", "secret")
+    token = http.web_auth_token()
+
+    class Req:
+        path = "/"
+        headers = {"Cookie": f"{http.WEB_AUTH_COOKIE}={token}"}
+
+    assert http.evaluate_web_static_access(Req()) == (True, False, None)
+
+
+def test_web_auth_denied(monkeypatch):
+    monkeypatch.setattr(http, "WEB_PASSWORD", "secret")
+
+    class Req:
+        path = "/?password=wrong"
+        headers = {}
+
+    assert http.evaluate_web_static_access(Req()) == (False, False, None)
+
+
+def test_only_static_paths_listed():
     assert http.path_requires_web_auth("/app.js") is True
     assert http.path_requires_web_auth("/playlists") is False
-    assert http.path_requires_web_auth("/cmd/player") is False

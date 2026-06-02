@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-import base64
+import hashlib
 import json
 import logging
 import mimetypes
@@ -25,7 +25,9 @@ WEB_DIR = os.getenv(
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "web"),
 )
 WEB_PASSWORD = os.getenv("MPDBACKEND_WEB_PASSWORD", "").strip()
-WEB_AUTH_REALM = "mpdbackend Web Player"
+WEB_AUTH_COOKIE = "mpdbackend_web"
+WEB_AUTH_QUERY = "password"
+WEB_AUTH_COOKIE_MAX_AGE = 30 * 24 * 3600
 
 STATIC_FILES = {
     "/": "index.html",
@@ -47,38 +49,84 @@ def path_requires_web_auth(path: str) -> bool:
     return path in WEB_PROTECTED_GET
 
 
-def parse_basic_auth(header: str) -> tuple[str, str] | None:
-    """Authorization: Basic … → (username, password) oder None."""
-    if not header.startswith("Basic "):
-        return None
-    try:
-        decoded = base64.b64decode(header[6:], validate=True).decode("utf-8")
-    except (ValueError, UnicodeDecodeError):
-        return None
-    username, sep, password = decoded.partition(":")
-    if not sep:
-        return None
-    return username, password
+def web_auth_token() -> str:
+    """Cookie-Wert aus dem konfigurierten Passwort (nicht das Klartext-Passwort)."""
+    return hashlib.sha256(WEB_PASSWORD.encode("utf-8")).hexdigest()
 
 
-def web_auth_valid(req) -> bool:
-    """Prüft HTTP-Basic-Auth: nur Passwort (Benutzername wird ignoriert)."""
-    if not web_auth_enabled():
-        return True
-    parsed = parse_basic_auth(req.headers.get("Authorization", ""))
-    if parsed is None:
+def parse_cookies(header: str) -> dict[str, str]:
+    cookies: dict[str, str] = {}
+    for part in header.split(";"):
+        part = part.strip()
+        if not part or "=" not in part:
+            continue
+        name, value = part.split("=", 1)
+        cookies[name.strip()] = value.strip()
+    return cookies
+
+
+def web_auth_cookie_valid(req) -> bool:
+    token = parse_cookies(req.headers.get("Cookie", "")).get(WEB_AUTH_COOKIE, "")
+    if not token:
         return False
-    _username, password = parsed
-    return secrets.compare_digest(password, WEB_PASSWORD)
+    return secrets.compare_digest(token, web_auth_token())
 
 
-def send_web_auth_required(req) -> None:
-    """401 mit WWW-Authenticate für Browser-Login."""
-    req.send_response(401)
-    req.send_header("WWW-Authenticate", f'Basic realm="{WEB_AUTH_REALM}"')
+def password_from_query(req) -> str:
+    query = dict(parse_qsl(urlparse(req.path).query))
+    return query.get(WEB_AUTH_QUERY, "")
+
+
+def query_has_password(req) -> bool:
+    return WEB_AUTH_QUERY in dict(parse_qsl(urlparse(req.path).query))
+
+
+def build_web_auth_cookie() -> str:
+    return (
+        f"{WEB_AUTH_COOKIE}={web_auth_token()}; Path=/; HttpOnly; "
+        f"SameSite=Lax; Max-Age={WEB_AUTH_COOKIE_MAX_AGE}"
+    )
+
+
+def evaluate_web_static_access(req) -> tuple[bool, bool, str | None]:
+    """
+    Zugriff auf statische Web-Player-Dateien prüfen.
+
+    Returns:
+        (granted, set_cookie, redirect_path)
+    """
+    if not web_auth_enabled():
+        return True, False, None
+
+    if web_auth_cookie_valid(req):
+        return True, False, None
+
+    query_password = password_from_query(req)
+    if query_password and secrets.compare_digest(query_password, WEB_PASSWORD):
+        path = urlparse(req.path).path
+        if query_has_password(req) and path in ("/", "/index.html"):
+            return True, True, "/" if path == "/" else "/index.html"
+        return True, True, None
+
+    return False, False, None
+
+
+def send_web_access_denied(req) -> None:
+    """403 wenn Web-Player ohne gültiges URL-Passwort aufgerufen wird."""
+    body = (
+        "<!DOCTYPE html><html lang=\"de\"><head><meta charset=\"utf-8\">"
+        "<title>403 Forbidden</title></head><body>"
+        "<h1>403 Forbidden</h1>"
+        f"<p>Web-Player: Passwort als URL-Parameter, z.&nbsp;B. "
+        f"<code>/?{WEB_AUTH_QUERY}=…</code></p>"
+        "</body></html>"
+    ).encode("utf-8")
+    req.send_response(403)
+    req.send_header("Content-Type", "text/html; charset=utf-8")
     req.send_header("Cache-Control", "no-store")
-    req.send_header("Content-Length", "0")
+    req.send_header("Content-Length", str(len(body)))
     req.end_headers()
+    req.wfile.write(body)
 
 
 class HTTPAPI:
@@ -119,12 +167,20 @@ class HTTPAPI:
                 """Leitet GET-Anfragen an die passenden Handler weiter."""
                 path = urlparse(self.path).path
 
-                if path_requires_web_auth(path) and not web_auth_valid(self):
-                    send_web_auth_required(self)
-                    return
-
                 if path in STATIC_FILES:
-                    api.handle_static(self, STATIC_FILES[path])
+                    granted, set_cookie, redirect = evaluate_web_static_access(self)
+                    if not granted:
+                        send_web_access_denied(self)
+                        return
+                    if redirect:
+                        self.send_response(302)
+                        self.send_header("Location", redirect)
+                        if set_cookie:
+                            self.send_header("Set-Cookie", build_web_auth_cookie())
+                        self.send_header("Cache-Control", "no-store")
+                        self.end_headers()
+                        return
+                    api.handle_static(self, STATIC_FILES[path], set_auth_cookie=set_cookie)
                     return
 
                 if path == "/hash":
@@ -192,9 +248,10 @@ class HTTPAPI:
         if os.path.isdir(WEB_DIR):
             if web_auth_enabled():
                 logger.info(
-                    "Web UI at http://%s:%s/ (password protected)",
+                    "Web UI at http://%s:%s/?%s=… (password in URL)",
                     HTTP_HOST,
                     HTTP_PORT,
+                    WEB_AUTH_QUERY,
                 )
             else:
                 logger.info("Web UI at http://%s:%s/", HTTP_HOST, HTTP_PORT)
@@ -217,7 +274,7 @@ class HTTPAPI:
         req.end_headers()
         req.wfile.write(raw)
 
-    def handle_static(self, req, filename: str) -> None:
+    def handle_static(self, req, filename: str, *, set_auth_cookie: bool = False) -> None:
         """Liefert Dateien aus dem web/-Verzeichnis aus."""
         safe_name = os.path.basename(filename)
         path = os.path.join(WEB_DIR, safe_name)
@@ -239,6 +296,8 @@ class HTTPAPI:
 
         req.send_response(200)
         req.send_header("Content-Type", content_type)
+        if set_auth_cookie:
+            req.send_header("Set-Cookie", build_web_auth_cookie())
         if safe_name == "index.html":
             req.send_header("Cache-Control", "no-store")
         req.send_header("Content-Length", str(len(data)))

@@ -249,7 +249,7 @@ Common options:
 | `MPDBACKEND_PUBLIC_BASE_URL` | Public URL of this backend |
 | `MPDBACKEND_HTTP_PORT` | HTTP port (default: `4533`) |
 | `MPDBACKEND_WEB_DIR` | Web player files (default: `server/web/`) |
-| `MPDBACKEND_WEB_PASSWORD` | Password for web player page in browser only (`/`, CSS, JS); HTTP API stays open |
+| `MPDBACKEND_WEB_PASSWORD` | Web player password: open with `/?password=…` (browser UI only; API open) |
 | `MPDBACKEND_MARKED_FOR_DELETE` | Target file for mark-for-delete (default: `data/mark_for_delete.cfg`) |
 
 See `server/systemd/mpdbackend.env.example` for the full list.
@@ -258,7 +258,7 @@ See `server/systemd/mpdbackend.env.example` for the full list.
 
 At **`http://host:4533/`** mpdbackend serves a responsive web UI — layout and typography adapt to the caller’s viewport (`clamp`, `vmin`, `dvh`; portrait, landscape, various screen sizes):
 
-**Protection:** set `MPDBACKEND_WEB_PASSWORD` in `mpdbackend.env` → browser asks for a password when opening the web player page only (`/`, CSS, JS). **Leave username empty** in the dialog. The HTTP API (`/nowplaying`, `/playlists`, `/cmd/*`, …) stays **open**.
+**Protection:** set `MPDBACKEND_WEB_PASSWORD` → open the web player with the password in the URL, e.g. `http://host:4533/?password=secret`. After the first visit the server sets a cookie (CSS/JS load without the password in the URL). The HTTP API (`/nowplaying`, `/playlists`, `/cmd/*`, …) stays **open**.
 
 - **Display:** cover, title, artist, album, progress (elapsed/duration), track position in playlist
 - **Channel:** picker from `channels.json` (logo + `stream_url`)
@@ -283,7 +283,7 @@ An external job can read this file and process the entry (delete, move, enqueue,
 
 | Endpoint | Description |
 |----------|-------------|
-| `GET /` | Web player (static files; password prompt in browser only, when set) |
+| `GET /` | Web player (static files; use `/?password=…` when set) |
 | `GET /nowplaying` | Current MPD track metadata (JSON, see below) |
 | `GET /playlists` | Available MPD playlists and active playlist |
 | `GET /cover?name=cover_….jpg` | Cached cover image |
