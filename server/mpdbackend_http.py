@@ -5,10 +5,12 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import mimetypes
 import os
+import secrets
 import threading
 
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
@@ -22,6 +24,8 @@ WEB_DIR = os.getenv(
     "MPDBACKEND_WEB_DIR",
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "web"),
 )
+WEB_PASSWORD = os.getenv("MPDBACKEND_WEB_PASSWORD", "").strip()
+WEB_AUTH_REALM = "mpdbackend Web Player"
 
 STATIC_FILES = {
     "/": "index.html",
@@ -29,6 +33,52 @@ STATIC_FILES = {
     "/style.css": "style.css",
     "/app.js": "app.js",
 }
+
+WEB_PROTECTED_GET = frozenset(STATIC_FILES)
+
+
+def web_auth_enabled() -> bool:
+    """True wenn MPDBACKEND_WEB_PASSWORD gesetzt ist."""
+    return bool(WEB_PASSWORD)
+
+
+def path_requires_web_auth(path: str) -> bool:
+    """Nur statische Web-Player-Dateien; HTTP-API bleibt ohne Auth."""
+    return path in WEB_PROTECTED_GET
+
+
+def parse_basic_auth(header: str) -> tuple[str, str] | None:
+    """Authorization: Basic … → (username, password) oder None."""
+    if not header.startswith("Basic "):
+        return None
+    try:
+        decoded = base64.b64decode(header[6:], validate=True).decode("utf-8")
+    except (ValueError, UnicodeDecodeError):
+        return None
+    username, sep, password = decoded.partition(":")
+    if not sep:
+        return None
+    return username, password
+
+
+def web_auth_valid(req) -> bool:
+    """Prüft HTTP-Basic-Auth: nur Passwort (Benutzername wird ignoriert)."""
+    if not web_auth_enabled():
+        return True
+    parsed = parse_basic_auth(req.headers.get("Authorization", ""))
+    if parsed is None:
+        return False
+    _username, password = parsed
+    return secrets.compare_digest(password, WEB_PASSWORD)
+
+
+def send_web_auth_required(req) -> None:
+    """401 mit WWW-Authenticate für Browser-Login."""
+    req.send_response(401)
+    req.send_header("WWW-Authenticate", f'Basic realm="{WEB_AUTH_REALM}"')
+    req.send_header("Cache-Control", "no-store")
+    req.send_header("Content-Length", "0")
+    req.end_headers()
 
 
 class HTTPAPI:
@@ -68,6 +118,10 @@ class HTTPAPI:
             def do_GET(self):
                 """Leitet GET-Anfragen an die passenden Handler weiter."""
                 path = urlparse(self.path).path
+
+                if path_requires_web_auth(path) and not web_auth_valid(self):
+                    send_web_auth_required(self)
+                    return
 
                 if path in STATIC_FILES:
                     api.handle_static(self, STATIC_FILES[path])
@@ -136,7 +190,14 @@ class HTTPAPI:
 
         threading.Thread(target=server.serve_forever, daemon=True).start()
         if os.path.isdir(WEB_DIR):
-            logger.info("Web UI at http://%s:%s/", HTTP_HOST, HTTP_PORT)
+            if web_auth_enabled():
+                logger.info(
+                    "Web UI at http://%s:%s/ (password protected)",
+                    HTTP_HOST,
+                    HTTP_PORT,
+                )
+            else:
+                logger.info("Web UI at http://%s:%s/", HTTP_HOST, HTTP_PORT)
         logger.info("HTTP listening on %s:%s", HTTP_HOST, HTTP_PORT)
 
     @staticmethod
