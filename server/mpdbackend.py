@@ -136,7 +136,7 @@ def build_full_path(rel_path):
 
 
 def save_current_track_file(song: dict, output_path: str | None = None) -> str:
-    """Schreibt den MPD-Dateipfad des aktuellen Titels in eine Textdatei."""
+    """Hängt den MPD-Dateipfad des aktuellen Titels an eine Textdatei an."""
     track_file = (song.get("file") or "").strip()
     if not track_file:
         raise ValueError("no current track file")
@@ -150,7 +150,7 @@ def save_current_track_file(song: dict, output_path: str | None = None) -> str:
     if parent:
         os.makedirs(parent, exist_ok=True)
 
-    with open(target_abs, "w", encoding="utf-8") as handle:
+    with open(target_abs, "a", encoding="utf-8") as handle:
         handle.write(track_file)
         handle.write("\n")
 

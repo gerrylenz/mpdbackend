@@ -195,13 +195,13 @@ At **`http://host:4533/`** mpdbackend serves a responsive web UI — layout and 
 - **Playlist:** active playlist and picker for all MPD playlists
 - **Control:** play/stop, next/back, volume (HTTP → MPD)
 - **Stream:** audio via `stream_url` from `channels.json` (separate from metadata)
-- **Mark for delete:** red cross → `POST /cmd/savefile` → writes MPD file path to `MPDBACKEND_MARKED_FOR_DELETE`
+- **Mark for delete:** red cross → `POST /cmd/savefile` → **appends** MPD file path to `MPDBACKEND_MARKED_FOR_DELETE`
 
 Audio comes from the **HTTP stream** (MPD `httpd`/Icecast); control and metadata from **mpdbackend port 4533**.
 
 ### Mark for delete
 
-`POST /cmd/savefile` overwrites the configured file (default: `data/mark_for_delete.cfg`) with **one line** — the MPD file path relative to `MPDBACKEND_MUSIC_ROOT`, e.g.:
+`POST /cmd/savefile` **appends** to the configured file (default: `data/mark_for_delete.cfg`) — **one line per click** with the MPD file path relative to `MPDBACKEND_MUSIC_ROOT`, e.g.:
 
 ```text
 Artist/Album/Track.mp3
@@ -224,7 +224,7 @@ An external job can read this file and process the entry (delete, move, enqueue,
 | `POST /cmd/player` | MPD transport: plain text `play`, `stop`, `next`, `back` |
 | `POST /cmd/volume` | Set volume: plain text `0`–`100` |
 | `POST /cmd/playlist` | Load and play playlist: plain text e.g. `Pop.m3u` |
-| `POST /cmd/savefile` | Write current MPD file path to `MPDBACKEND_MARKED_FOR_DELETE` |
+| `POST /cmd/savefile` | **Append** current MPD file path to `MPDBACKEND_MARKED_FOR_DELETE` |
 
 **`/nowplaying` response** (example):
 

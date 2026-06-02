@@ -195,13 +195,13 @@ Unter **`http://host:4533/`** liefert mpdbackend eine responsive Web-Oberfläche
 - **Playlist:** aktive Playlist und Auswahl aller MPD-Playlists
 - **Steuerung:** Play/Stop, Next/Back, Lautstärke (über HTTP → MPD)
 - **Stream:** Audio über `stream_url` aus `channels.json` (getrennt von Metadaten)
-- **Markieren:** rotes Kreuz → `POST /cmd/savefile` → schreibt MPD-Dateipfad nach `MPDBACKEND_MARKED_FOR_DELETE`
+- **Markieren:** rotes Kreuz → `POST /cmd/savefile` → hängt MPD-Dateipfad an `MPDBACKEND_MARKED_FOR_DELETE` an
 
 Audio kommt vom **HTTP-Stream** (MPD `httpd`/Icecast), Steuerung und Metadaten vom **mpdbackend-Port 4533**.
 
 ### Mark for delete
 
-`POST /cmd/savefile` überschreibt die konfigurierte Datei (Standard: `data/mark_for_delete.cfg`) mit **einer Zeile** — dem relativen MPD-Dateipfad unter `MPDBACKEND_MUSIC_ROOT`, z. B.:
+`POST /cmd/savefile` **hängt** an die konfigurierte Datei an (Standard: `data/mark_for_delete.cfg`) — pro Klick **eine Zeile** mit dem relativen MPD-Dateipfad unter `MPDBACKEND_MUSIC_ROOT`, z. B.:
 
 ```text
 Künstler/Album/Titel.mp3
@@ -224,7 +224,7 @@ Ein externer Job kann diese Datei auslesen und den Eintrag verarbeiten (z. B. 
 | `POST /cmd/player` | MPD-Transport: Plain-Text `play`, `stop`, `next`, `back` |
 | `POST /cmd/volume` | Lautstärke setzen: Plain-Text `0`–`100` |
 | `POST /cmd/playlist` | Playlist laden und abspielen: Plain-Text z. B. `Pop.m3u` |
-| `POST /cmd/savefile` | MPD-Dateipfad des aktuellen Titels nach `MPDBACKEND_MARKED_FOR_DELETE` schreiben |
+| `POST /cmd/savefile` | MPD-Dateipfad des aktuellen Titels an `MPDBACKEND_MARKED_FOR_DELETE` **anhängen** |
 
 **Antwort von `/nowplaying`** (Beispiel):
 

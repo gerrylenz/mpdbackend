@@ -407,7 +407,7 @@ class HTTPAPI:
         self._send_json(req, 200, {"ok": True, "playlist": playlist})
 
     def handle_cmd_savefile(self, req) -> None:
-        """POST /cmd/savefile – aktuellen MPD-Dateipfad in Textdatei schreiben."""
+        """POST /cmd/savefile – aktuellen MPD-Dateipfad an Textdatei anhängen."""
         from mpdbackend import MARKED_FOR_DELETE, save_current_track_file
 
         song = self.worker.last_song or {}
