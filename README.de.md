@@ -208,7 +208,7 @@ Bei `MPDBACKEND_MQTT_ENABLED=true` publiziert der Server Status und nimmt MPD-St
 |-------|---------|--------------|
 | `mpdbackend/state` | JSON, retained | Track-Metadaten: `state`, `title`, `artist`, `album`, `duration` (`M:SS`), `cover_name`, `volume`, `lastloadedplaylist` |
 | `mpdbackend/elapsed` | Text, retained | Aktuelle Position als `M:SS` oder `H:MM:SS` (Update alle `MPDBACKEND_MQTT_ELAPSED_INTERVAL` s) |
-| `mpdbackend/current` | JSON, retained | Queue-Kontext: `playlist`, `pos`, `file` |
+| `mpdbackend/current` | JSON, retained | Queue: `playlist`, `pos`, `file`, optional `volume` |
 | `mpdbackend/playlists` | JSON, retained | Verfügbare Playlists: `playlists` (Array) |
 | `mpdbackend/cover` | JPEG-Binärdaten, retained | Aktuelles Cover-Bild |
 | `mpdbackend/connected` | `online` / `offline`, retained | Verfügbarkeit (LWT für Home Assistant) |
@@ -234,7 +234,7 @@ Bei `MPDBACKEND_MQTT_ENABLED=true` publiziert der Server Status und nimmt MPD-St
   "duration": "4:05",
   "cover_name": "cover_a1b2c3.jpg",
   "volume": 45,
-  "lastloadedplaylist": "Pop"
+  "lastloadedplaylist": "Pop.m3u"
 }
 ```
 

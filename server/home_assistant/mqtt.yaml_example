@@ -1,34 +1,84 @@
-##################################################################################################################################  
+##################################################################################################################################
+# MQTT-Integration (Auszug). Sensoren lesen nur – Steuerung über mpdbackend/cmd/* (kein command_topic hier).
+# Volume-Slider: number-Entity unten (command_topic mpdbackend/cmd/volume).
+##################################################################################################################################
 image:
   - name: "MPD Cover"
     image_topic: "mpdbackend/cover"
-##################################################################################################################################  
+
 number:
-  - unique_id: "mpd_workplayer_volume"
-    name: "MPD Workplayer Volume"
-    state_topic: "mpdbackend/status"
+  - unique_id: mpd_workplayer_volume
+    name: MPD Workplayer Volume
+    state_topic: mpdbackend/status
     value_template: "{{ value_json.volume | default(0) | int }}"
-    command_topic: "mpdbackend/cmd/volume"
+    command_topic: mpdbackend/cmd/volume
     command_template: "{{ value | int }}"
     min: 0
     max: 100
     step: 5
     mode: slider
-  - unique_id: "mpd_home_volume"
-    name: "MPD Home Volume"
-    state_topic: "mpd/status"
-    value_template: "{{ value_json.volume | default(0) | int }}"
-    command_topic: "mpd//volume/set"
-    command_template: '{"volume": "{{ value | int }}" }'
-    min: 0
-    max: 100
-    step: 5
-    mode: slider
-##################################################################################################################################  
+
 sensor:
-  - name: mpd_workplayer_playlists
-    unique_id: mpd_workplayer_playlists
+  # Track-Metadaten (mpdbackend/state)
+  - unique_id: mpd_workplayer_state
+    name: MPD Workplayer State
+    state_topic: mpdbackend/state
+    value_template: "{{ value_json.state | default('stop') }}"
+    json_attributes_topic: mpdbackend/state
+
+  - unique_id: mpd_workplayer_artist
+    name: MPD Workplayer Artist
+    state_topic: mpdbackend/state
+    value_template: "{{ value_json.artist | default('') }}"
+
+  - unique_id: mpd_workplayer_title
+    name: MPD Workplayer Title
+    state_topic: mpdbackend/state
+    value_template: "{{ value_json.title | default('') }}"
+
+  - unique_id: mpd_workplayer_cover
+    name: MPD Workplayer Cover
+    state_topic: mpdbackend/state
+    value_template: "{{ value_json.cover_name | default('') }}"
+
+  - unique_id: mpd_workplayer_duration
+    name: MPD Workplayer Duration
+    state_topic: mpdbackend/state
+    value_template: "{{ value_json.duration | default('0:00') }}"
+
+  - unique_id: mpd_workplayer_lastloadedplaylist
+    name: MPD Workplayer Last Playlist
+    state_topic: mpdbackend/state
+    value_template: "{{ value_json.lastloadedplaylist | default('') }}"
+
+  # Queue (mpdbackend/current) – für Template-Select: state_attr(..., 'playlist')
+  - unique_id: mpd_workplayer_current
+    name: MPD Workplayer Current
+    state_topic: mpdbackend/current
+    value_template: "{{ value_json.playlist | default('') }}"
+    json_attributes_topic: mpdbackend/current
+
+  - unique_id: mpd_workplayer_file
+    name: MPD Workplayer File
+    state_topic: mpdbackend/current
+    value_template: "{{ value_json.file | default('') }}"
+
+  - unique_id: mpd_workplayer_song_pos
+    name: MPD Workplayer Song Pos
+    state_topic: mpdbackend/current
+    value_template: "{{ value_json.pos | default(0) }}"
+
+  # Playlist-Liste (mpdbackend/playlists) – für Template-Select: state_attr(..., 'playlists')
+  - unique_id: mpd_workplayer_playlists
+    name: MPD Workplayer Playlists
     state_topic: mpdbackend/playlists
     value_template: "{{ value_json.playlists | length }}"
     json_attributes_topic: mpdbackend/playlists
-##################################################################################################################################  
+
+  # Elapsed als Plain-Text (mpdbackend/elapsed)
+  - unique_id: mpd_workplayer_elapsed
+    name: MPD Workplayer Elapsed
+    state_topic: mpdbackend/elapsed
+    value_template: "{{ value }}"
+
+##################################################################################################################################

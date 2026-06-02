@@ -9,6 +9,7 @@
           {% set opts = state_attr('sensor.mpd_workplayer_playlists', 'playlists')
              | default([], true) | map('string') | list %}
           {% set active = state_attr('sensor.mpd_workplayer_current', 'playlist')
+             | default(states('sensor.mpd_workplayer_lastloadedplaylist'), true)
              | default('', true) %}
           {% if active in opts %}
             {{ active }}
@@ -28,3 +29,4 @@
             topic: mpdbackend/cmd/playlist
             payload: "{{ option }}"
             qos: 0
+            retain: false

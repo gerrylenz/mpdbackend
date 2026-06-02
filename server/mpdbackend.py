@@ -232,10 +232,44 @@ def format_playback_time(seconds: float) -> str:
     return f"{minutes}:{secs:02d}"
 
 
+def display_playlist_filename(name: str) -> str:
+    """Liefert Playlist-Dateinamen mit .m3u für HA/MQTT (leer wenn kein Name)."""
+    name = (name or "").strip()
+    if not name:
+        return ""
+    if name.endswith(".m3u"):
+        return name
+    return f"{name}.m3u"
+
+
+def resolve_active_playlist_name(
+    status: dict, loaded_playlist: str, available: list[str]
+) -> str:
+    """Aktive Playlist: zuerst per MQTT gesetzt, sonst MPD lastloadedplaylist."""
+    if loaded_playlist:
+        return display_playlist_filename(loaded_playlist)
+
+    mpd_raw = parse_status_lastloadedplaylist(status)
+    if not mpd_raw:
+        return ""
+
+    display = display_playlist_filename(mpd_raw)
+    if display in available:
+        return display
+
+    base = MPD.normalize_playlist_name(display)
+    for item in available:
+        if MPD.normalize_playlist_name(item) == base:
+            return item
+    return display
+
+
 def build_mpd_status_data(status: dict) -> dict:
     """Baut Status-Daten aus MPD status() für MQTT mpdbackend/status."""
     payload: dict = {
-        "lastloadedplaylist": parse_status_lastloadedplaylist(status),
+        "lastloadedplaylist": display_playlist_filename(
+            parse_status_lastloadedplaylist(status)
+        ),
     }
     volume = parse_status_volume(status)
     if volume is not None:
@@ -466,14 +500,23 @@ class Worker(threading.Thread):
         self.elapsed_sync_at = time.monotonic()
 
     def try_resync_elapsed(self) -> None:
-        """MPD-elapsed nachziehen (non-blocking, nutzt safe status)."""
-        status = self.mpd.safe("status") or {}
-        parsed = parse_status_elapsed(status)
-        if parsed is None:
+        """MPD-elapsed nachziehen; blockiert nicht, wenn die Verbindung in idle hängt."""
+        if not self.mpd.lock.acquire(blocking=False):
             return
-        with self.lock:
-            self.elapsed_sync_base = parsed
-            self.elapsed_sync_at = time.monotonic()
+        try:
+            if not self.mpd.client and not self.mpd.connect():
+                return
+            status = self.mpd.client.status() or {}
+            parsed = parse_status_elapsed(status)
+            if parsed is None:
+                return
+            with self.lock:
+                self.elapsed_sync_base = parsed
+                self.elapsed_sync_at = time.monotonic()
+        except Exception:
+            self.mpd.client = None
+        finally:
+            self.mpd.lock.release()
 
     def build_elapsed_status(self) -> dict:
         """Berechnet elapsed aus Sync-Punkt + Interpolation."""
@@ -500,7 +543,9 @@ class Worker(threading.Thread):
             "album": song.get("album"),
             "duration": format_playback_time(duration_sec),
             "cover_name": self.cover.cover_name(),
-            "lastloadedplaylist": parse_status_lastloadedplaylist(status),
+            "lastloadedplaylist": display_playlist_filename(
+                parse_status_lastloadedplaylist(status)
+            ),
         }
         volume = parse_status_volume(status)
         if volume is not None:
@@ -516,11 +561,18 @@ class Worker(threading.Thread):
     ) -> dict:
         """Queue-Kontext aus MPD für MQTT current-Topic."""
         song_pos = status.get("song")
-        return {
-            "playlist": loaded_playlist,
+        available = self.mpd.available_playlists()
+        payload = {
+            "playlist": resolve_active_playlist_name(
+                status, loaded_playlist, available
+            ),
             "pos": int(song_pos) if song_pos is not None else None,
             "file": song.get("file") or "",
         }
+        volume = parse_status_volume(status)
+        if volume is not None:
+            payload["volume"] = volume
+        return payload
 
     def resolve_duration(self, song, status):
         """Liefert Track-Dauer aus Song- oder Status-Metadaten."""
