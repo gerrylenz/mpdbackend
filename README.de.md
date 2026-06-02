@@ -54,7 +54,30 @@ Eine gemeinsame **`channels.json`** (z. B. auf dem Music-Assistant-Host) liste
 
 **Nicht nötig:** pro Browser, Hörer oder Music-Assistant-Player eine eigene mpdbackend-Instanz.
 
-## Funktionen
+### `channels.json` = Routing-Katalog (nicht Multi-MPD in einem Prozess)
+
+`channels.json` ist **keine** Liste von Sendern, die ein mpdbackend-Prozess gleichzeitig abspielt oder ausliest. Sie ist ein **Verzeichnis / Routing-Tabelle** für Clients (Music Assistant, Web-Player):
+
+| Endpoint / Client | Was `channels.json` hier bedeutet |
+|-------------------|-------------------------------------|
+| **`GET /channels`** | Liefert die **Kanalliste** (Name, Logo, `stream_url`, `backend_url`) |
+| **`GET /nowplaying`** | Immer nur der **eine** MPD dieser mpdbackend-Instanz — **ohne** Kanal-Parameter |
+| **Music Assistant** | Lädt die Liste von der Default-Backend-URL; pro Kanal Audio über `stream_url`, Metadaten über **dessen** `backend_url` |
+| **Web-Player** | Kanalwechsel = anderer **Stream**; Metadaten und MPD-Steuerung bleiben beim **lokalen** MPD dieser Instanz |
+
+**Music Assistant (Multi-MPD):** Eine gemeinsame `channels.json` mit unterschiedlichen `backend_url`-Einträgen reicht. Der Provider ruft für Kanal `"1"` z. B. `http://host:4534/nowplaying` auf — nicht den Default-Port `:4533`. Mehrere Kanäle in der Datei sind deshalb sinnvoll, **wenn jeder Kanal auf ein eigenes mpdbackend (→ eigener MPD) zeigt**.
+
+**Ein MPD:** In `channels.json` reicht **ein** Kanal (`"0"`). Mehrere Einträge ohne unterschiedliche `backend_url` wären irreführend — alle Metadaten kämen ohnehin vom selben MPD.
+
+**Wo die Datei liegen soll:**
+
+| Setup | Empfehlung |
+|-------|------------|
+| **1× MPD** | `channels.json` mit einem Eintrag neben mpdbackend (Vorlage: `channels.json.example`) |
+| **3× MPD, Music Assistant** | Eine **kanonische** `channels.json` (Vorlage: `channels.json.example.multi`) mit passender `backend_url` pro Kanal; MA-Default-Backend-URL zeigt auf **eine** Instanz, die `/channels` ausliefert |
+| **3× MPD, nur Web-Player** | Pro mpdbackend optional **nur der eigene** Kanal in `channels.json` — oder volle Liste nur für MA |
+
+Beispieldateien: `server/channels.json.example` (ein Sender), `server/channels.json.example.multi` (drei MPD auf einem Host).
 
 - Live **Titel, Künstler, Album** von MPD (nicht nur ICY-Stream-Tags)
 - **Cover** aus eingebetteten Tags (ID3/APIC), ffmpeg-Video-Stream oder Ordnerbildern (`cover.jpg`)
@@ -77,7 +100,8 @@ mpdbackend/
 │   ├── mpdbackend_cover.py    # Cover-Extraktion und Cache
 │   ├── web/                   # Web-Player (HTML/CSS/JS)
 │   ├── home_assistant/        # Beispiele für MQTT-Integration (HA)
-│   ├── channels.json.example
+│   ├── channels.json.example          # 1 MPD, 1 Kanal
+│   ├── channels.json.example.multi  # 3 MPD, Routing über backend_url
 │   ├── install/
 │   │   ├── install.sh
 │   │   └── requirements.txt
@@ -114,7 +138,7 @@ Konfiguration anpassen:
 
 ```bash
 nano mpdbackend.env      # MQTT, MPD-Socket, Pfade
-nano channels.json       # Radiosender (Kopie von channels.json.example)
+nano channels.json       # 1 Kanal: channels.json.example · Multi-MPD: .example.multi
 ```
 
 Logos:
@@ -145,30 +169,38 @@ docker cp music_assistant/mpdbackend music-assistant:/app/venv/lib/python3.14/si
 docker restart music-assistant
 ```
 
-In Music Assistant **eine Backend-URL** konfigurieren (Standard-Metadaten-Server). Kanäle mit eigenem `backend_url` in `channels.json` unterstützen Multi-Standort-Setups.
+In Music Assistant **eine Backend-URL** konfigurieren — das ist die Instanz, von der MA **`/channels`** lädt (Katalog). Metadaten pro Kanal kommen von der jeweiligen `backend_url` in `channels.json`, nicht zwingend von dieser Default-URL.
 
 ## Kanal-Konfiguration
 
-`channels.json` definiert die in Music Assistant sichtbaren Radiosender:
+### Standard: ein MPD, ein Kanal
+
+Vorlage `channels.json.example` — ein Eintrag, `stream_url` und `backend_url` zeigen auf denselben Host:
 
 ```json
 {
   "0": {
     "name": "Store Radio",
     "description": "Hauptbereich",
-    "stream_url": "https://example.com:8000/stream.mp3",
+    "stream_url": "http://192.168.1.10:8000/",
     "content_type": "mp3",
-    "backend_url": "http://mpd-host:4533"
+    "backend_url": "http://192.168.1.10:4533"
   }
 }
 ```
+
+Ohne `backend_url` nutzt Music Assistant die im Provider konfigurierte Default-Backend-URL.
+
+### Mehrere Kanäle (nur sinnvoll mit Routing)
+
+Mehrere Einträge in **einer** `channels.json` sind für Music Assistant gedacht, wenn **jeder Kanal eine eigene `backend_url`** hat (→ eigenes mpdbackend → eigener MPD). Vorlage: `channels.json.example.multi`.
 
 | Feld | Bedeutung |
 |------|-----------|
 | `name` | Anzeigename in Music Assistant |
 | `stream_url` | HTTP/Icecast-URL für Audio (Music Assistant **und** Web-Player) |
 | `content_type` | `mp3`, `aac`, `ogg`, `flac` |
-| `backend_url` | Optional; Metadaten-Server für diesen Kanal |
+| `backend_url` | Metadaten-Server **für diesen Kanal** (Pflicht bei Multi-MPD; sonst MA-Default) |
 
 **Wichtig:** `stream_url` liefert das **Audio**, `backend_url` bzw. `:4533` liefert **Metadaten und Steuerung**. Beides wird für den Web-Player benötigt.
 
@@ -182,7 +214,7 @@ Beispiel (siehe auch `server/install/mpd.conf_example`):
 | `"1"` Rock | `/run/mpd-rock/socket` | `4534` | `http://192.168.1.10:4534` |
 | `"2"` Chill | `/run/mpd-chill/socket` | `4535` | `http://192.168.1.10:4535` |
 
-Pro Instanz: eigene `mpdbackend.env` (Socket, Port, Pfade) und eigener systemd-Dienst — oder manuell mit getrennten Installationsverzeichnissen.
+Pro Instanz: eigene `mpdbackend.env` (Socket, Port, Pfade) und eigener systemd-Dienst. **Dieselbe** `channels.json.example.multi` kann auf allen Instanzen liegen (MA braucht `/channels` nur von einer Default-URL) — oder jede Instanz führt nur ihren eigenen Kanaleintrag für den Web-Player.
 
 ## Konfiguration (Server)
 

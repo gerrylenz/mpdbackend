@@ -1,0 +1,23 @@
+{
+  "0": {
+    "name": "Pop Radio",
+    "description": "MPD Pop — mpdbackend :4533",
+    "stream_url": "http://192.168.1.10:8000/",
+    "content_type": "mp3",
+    "backend_url": "http://192.168.1.10:4533"
+  },
+  "1": {
+    "name": "Rock Radio",
+    "description": "MPD Rock — mpdbackend :4534",
+    "stream_url": "http://192.168.1.10:8001/",
+    "content_type": "mp3",
+    "backend_url": "http://192.168.1.10:4534"
+  },
+  "2": {
+    "name": "Chill Radio",
+    "description": "MPD Chill — mpdbackend :4535",
+    "stream_url": "http://192.168.1.10:8002/",
+    "content_type": "mp3",
+    "backend_url": "http://192.168.1.10:4535"
+  }
+}

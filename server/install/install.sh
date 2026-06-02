@@ -53,7 +53,7 @@ require_command() {
 
 validate_source_dir() {
     local missing=0
-    for file in mpdbackend.py mpdbackend_mqtt.py mpdbackend_http.py mpdbackend_cover.py channels.json.example systemd/mpdbackend.service systemd/mpdbackend.env.example install/install.sh install/requirements.txt web/index.html web/style.css web/app.js; do
+    for file in mpdbackend.py mpdbackend_mqtt.py mpdbackend_http.py mpdbackend_cover.py channels.json.example channels.json.example.multi systemd/mpdbackend.service systemd/mpdbackend.env.example install/install.sh install/requirements.txt web/index.html web/style.css web/app.js; do
         if [[ ! -f "${SOURCE_DIR}/${file}" ]]; then
             echo "Missing in source directory (${SOURCE_DIR}): ${file}" >&2
             missing=1
@@ -77,6 +77,7 @@ copy_server_files() {
     install -m 644 "${SOURCE_DIR}/web/style.css" "${INSTALL_DIR}/web/"
     install -m 644 "${SOURCE_DIR}/web/app.js" "${INSTALL_DIR}/web/"
     install -m 644 "${SOURCE_DIR}/channels.json.example" "${INSTALL_DIR}/"
+    install -m 644 "${SOURCE_DIR}/channels.json.example.multi" "${INSTALL_DIR}/"
 
     install -m 755 "${SOURCE_DIR}/install/install.sh" "${INSTALL_DIR}/install/"
     install -m 644 "${SOURCE_DIR}/install/requirements.txt" "${INSTALL_DIR}/install/"
@@ -191,7 +192,7 @@ Installation complete.
     ${INSTALL_DIR}/mpdbackend.env
 
   Next steps:
-    1. Edit ${INSTALL_DIR}/channels.json
+    1. Edit ${INSTALL_DIR}/channels.json (from channels.json.example or .example.multi)
     2. Edit ${INSTALL_DIR}/mpdbackend.env (MQTT, MPD socket, public URL)
     3. Put logos in ${INSTALL_DIR}/data/logos/  (channel_0.png, channel_1.png, ...)
 EOF
