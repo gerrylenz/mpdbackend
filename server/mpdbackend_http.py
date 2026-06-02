@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+import mimetypes
 import os
 import threading
 
@@ -17,16 +18,46 @@ logger = logging.getLogger("mpdbackend.http")
 
 HTTP_HOST = "0.0.0.0"
 HTTP_PORT = int(os.getenv("MPDBACKEND_HTTP_PORT", "4533"))
+WEB_DIR = os.getenv(
+    "MPDBACKEND_WEB_DIR",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "web"),
+)
+
+STATIC_FILES = {
+    "/": "index.html",
+    "/index.html": "index.html",
+    "/style.css": "style.css",
+    "/app.js": "app.js",
+}
 
 
 class HTTPAPI:
-    """HTTP-Endpunkte für Now-Playing, Cover, Sender und Health."""
+    """HTTP-Endpunkte für Now-Playing, Cover, Sender, Web-UI und Steuerung."""
 
     def __init__(self, worker, channel_registry, *, mqtt_enabled: bool) -> None:
         """Speichert Worker, Channel-Registry und MQTT-Status für Health."""
         self.worker = worker
         self.channel_registry = channel_registry
         self.mqtt_enabled = mqtt_enabled
+        self.loaded_playlist = ""
+
+    def _resolve_loaded_playlist(self) -> str:
+        """Aktive Playlist aus HTTP- oder MQTT-Kontext."""
+        publisher = self.worker.mqtt_publisher
+        if publisher and publisher.loaded_playlist:
+            return publisher.loaded_playlist
+        return self.loaded_playlist
+
+    def _build_playlist_state(self) -> dict:
+        """Verfügbare und aktive MPD-Playlist für HTTP-Responses."""
+        from mpdbackend import resolve_active_playlist_name
+
+        status = self.worker.last_status or {}
+        available = self.worker.mpd.available_playlists()
+        active = resolve_active_playlist_name(
+            status, self._resolve_loaded_playlist(), available
+        )
+        return {"playlists": available, "active": active}
 
     def start(self) -> None:
         """Startet den Threading-HTTP-Server im Hintergrund."""
@@ -37,6 +68,10 @@ class HTTPAPI:
             def do_GET(self):
                 """Leitet GET-Anfragen an die passenden Handler weiter."""
                 path = urlparse(self.path).path
+
+                if path in STATIC_FILES:
+                    api.handle_static(self, STATIC_FILES[path])
+                    return
 
                 if path == "/hash":
                     api.handle_changed(self)
@@ -58,8 +93,35 @@ class HTTPAPI:
                     api.handle_channels(self)
                     return
 
+                if path == "/playlists":
+                    api.handle_playlists(self)
+                    return
+
                 if path == "/health":
                     api.handle_health(self)
+                    return
+
+                self.send_response(404)
+                self.end_headers()
+
+            def do_POST(self):
+                """Steuerbefehle an MPD (Analog zu MQTT cmd-Topics)."""
+                path = urlparse(self.path).path
+
+                if path == "/cmd/player":
+                    api.handle_cmd_player(self)
+                    return
+
+                if path == "/cmd/volume":
+                    api.handle_cmd_volume(self)
+                    return
+
+                if path == "/cmd/playlist":
+                    api.handle_cmd_playlist(self)
+                    return
+
+                if path == "/cmd/savefile":
+                    api.handle_cmd_savefile(self)
                     return
 
                 self.send_response(404)
@@ -73,13 +135,66 @@ class HTTPAPI:
         server.worker = self.worker
 
         threading.Thread(target=server.serve_forever, daemon=True).start()
+        if os.path.isdir(WEB_DIR):
+            logger.info("Web UI at http://%s:%s/", HTTP_HOST, HTTP_PORT)
         logger.info("HTTP listening on %s:%s", HTTP_HOST, HTTP_PORT)
+
+    @staticmethod
+    def _read_body(req) -> bytes:
+        length = int(req.headers.get("Content-Length", 0))
+        if length <= 0:
+            return b""
+        return req.rfile.read(length)
+
+    @staticmethod
+    def _send_json(req, status: int, data: dict) -> None:
+        raw = json.dumps(data).encode("utf-8")
+        req.send_response(status)
+        req.send_header("Content-Type", "application/json")
+        req.send_header("Cache-Control", "no-store")
+        req.send_header("Content-Length", str(len(raw)))
+        req.end_headers()
+        req.wfile.write(raw)
+
+    def handle_static(self, req, filename: str) -> None:
+        """Liefert Dateien aus dem web/-Verzeichnis aus."""
+        safe_name = os.path.basename(filename)
+        path = os.path.join(WEB_DIR, safe_name)
+        web_root = os.path.abspath(WEB_DIR)
+
+        if not os.path.abspath(path).startswith(web_root + os.sep):
+            req.send_response(404)
+            req.end_headers()
+            return
+
+        if not os.path.isfile(path):
+            req.send_response(404)
+            req.end_headers()
+            return
+
+        content_type = mimetypes.guess_type(path)[0] or "application/octet-stream"
+        with open(path, "rb") as handle:
+            data = handle.read()
+
+        req.send_response(200)
+        req.send_header("Content-Type", content_type)
+        if safe_name == "index.html":
+            req.send_header("Cache-Control", "no-store")
+        req.send_header("Content-Length", str(len(data)))
+        req.end_headers()
+        req.wfile.write(data)
 
     def handle_nowplaying(self, req):
         """GET /nowplaying – aktuelle Track-Metadaten als JSON."""
+        from mpdbackend import parse_status_volume, resolve_active_playlist_name
+
         song = self.worker.last_song or {}
         status = self.worker.last_status or {}
         elapsed_status = self.worker.build_elapsed_status()
+        available = self.worker.mpd.available_playlists()
+        active_playlist = resolve_active_playlist_name(
+            status, self._resolve_loaded_playlist(), available
+        )
 
         data = {
             "state": status.get("state"),
@@ -91,12 +206,35 @@ class HTTPAPI:
             "elapsed": float(elapsed_status.get("elapsed") or 0),
             "cover_name": self.worker.cover.cover_name(),
             "media_image_url": self.worker.cover.cover_name(),
+            "playlist": active_playlist,
+            "file": song.get("file") or "",
         }
+        volume = parse_status_volume(status)
+        if volume is not None:
+            data["volume"] = volume
+
+        song_pos = status.get("song")
+        if song_pos is not None:
+            data["pos"] = int(song_pos) + 1
+        playlist_length = status.get("playlistlength")
+        if playlist_length is not None:
+            data["playlist_length"] = int(playlist_length)
 
         raw = json.dumps(data).encode("utf-8")
 
         req.send_response(200)
         req.send_header("Content-Type", "application/json")
+        req.send_header("Content-Length", str(len(raw)))
+        req.end_headers()
+        req.wfile.write(raw)
+
+    def handle_playlists(self, req):
+        """GET /playlists – verfügbare MPD-Playlists und aktive Playlist."""
+        raw = json.dumps(self._build_playlist_state()).encode("utf-8")
+
+        req.send_response(200)
+        req.send_header("Content-Type", "application/json")
+        req.send_header("Cache-Control", "no-store")
         req.send_header("Content-Length", str(len(raw)))
         req.end_headers()
         req.wfile.write(raw)
@@ -212,3 +350,86 @@ class HTTPAPI:
         req.send_header("Content-Length", str(len(raw)))
         req.end_headers()
         req.wfile.write(raw)
+
+    def handle_cmd_player(self, req) -> None:
+        """POST /cmd/player – play|stop|next|back (Plain-Text)."""
+        from mpdbackend_mqtt import parse_mqtt_player_command
+
+        command = parse_mqtt_player_command(self._read_body(req))
+        if command is None:
+            self._send_json(req, 400, {"ok": False, "error": "invalid command"})
+            return
+
+        if not self.worker.mpd.execute_player_action(command.value):
+            self._send_json(req, 503, {"ok": False, "error": "mpd command failed"})
+            return
+
+        self._send_json(req, 200, {"ok": True, "command": command.value})
+
+    def handle_cmd_volume(self, req) -> None:
+        """POST /cmd/volume – Lautstärke 0–100 (Plain-Text)."""
+        from mpdbackend_mqtt import parse_mqtt_volume_command
+
+        volume = parse_mqtt_volume_command(self._read_body(req))
+        if volume is None:
+            self._send_json(req, 400, {"ok": False, "error": "invalid volume"})
+            return
+
+        if not self.worker.mpd.set_volume(volume):
+            self._send_json(req, 503, {"ok": False, "error": "mpd setvol failed"})
+            return
+
+        song, status = self.worker.update_state()
+        self.worker.publish(song, status)
+        self._send_json(req, 200, {"ok": True, "volume": volume})
+
+    def handle_cmd_playlist(self, req) -> None:
+        """POST /cmd/playlist – Playlist laden und abspielen (Plain-Text)."""
+        from mpdbackend_mqtt import parse_mqtt_playlist_name
+
+        playlist = parse_mqtt_playlist_name(self._read_body(req))
+        if not playlist:
+            self._send_json(req, 400, {"ok": False, "error": "empty playlist name"})
+            return
+
+        if not self.worker.mpd.load_and_play_playlist(playlist):
+            self._send_json(req, 503, {"ok": False, "error": "load playlist failed"})
+            return
+
+        self.loaded_playlist = playlist
+        publisher = self.worker.mqtt_publisher
+        if publisher:
+            publisher.set_loaded_playlist(playlist)
+            publisher.state_cache = None
+
+        song, status = self.worker.update_state()
+        self.worker.publish(song, status)
+        self._send_json(req, 200, {"ok": True, "playlist": playlist})
+
+    def handle_cmd_savefile(self, req) -> None:
+        """POST /cmd/savefile – aktuellen MPD-Dateipfad in Textdatei schreiben."""
+        from mpdbackend import MARKED_FOR_DELETE, save_current_track_file
+
+        song = self.worker.last_song or {}
+        try:
+            track_file = save_current_track_file(song)
+        except ValueError as err:
+            if str(err) == "no current track file":
+                self._send_json(req, 400, {"ok": False, "error": str(err)})
+                return
+            self._send_json(req, 503, {"ok": False, "error": str(err)})
+            return
+        except OSError as err:
+            logger.warning("Failed to write current file: %s", err)
+            self._send_json(req, 503, {"ok": False, "error": "write failed"})
+            return
+
+        self._send_json(
+            req,
+            200,
+            {
+                "ok": True,
+                "file": track_file,
+                "path": os.path.abspath(MARKED_FOR_DELETE),
+            },
+        )

@@ -16,9 +16,14 @@ MPD spielt lokale Dateien oder Playlists; ein Icecast-/HTTP-Stream sendet das Au
 └─────────────┘  │                 │  (server/)       │    /nowplaying   │  (provider/)    │
 ┌─────────────┐  │                 └────────┬─────────┘    /cover        └───────┬─────────┘
 │   MPD #2    │──┘                          │                                    │
-└─────────────┘                             │ Icecast / HTTP                     │ Wiedergabe
-                                            ▼                                    ▼
-                                     stream 0..2                           Chromecast / …
+└─────────────┘              ┌──────────────┼──────────────┐                     │ Wiedergabe
+                             │              │              │                     ▼
+                      Browser│         Icecast / HTTP      │              Chromecast / …
+                      :4533/ │              │              │
+                             ▼              ▼              ▼
+                        Web-Player    stream 0..2    MQTT (optional)
+                                        ▲
+                                        └── Audio-Stream (getrennt von Metadaten)
 ```
 
 | Komponente | Aufgabe |
@@ -36,7 +41,8 @@ Pro **MPD-Host** läuft eine eigene **mpdbackend-Server-Instanz**. Eine gemeinsa
 - **Dynamische Kanalliste** über `channels.json` (Reload ohne Neustart)
 - **MQTT**-Status und **Fernsteuerung von MPD** (optional, z. B. Home Assistant)
 - **Track-Dauer** und **abgelaufene Zeit** per MQTT (Format `M:SS`)
-- **HTTP-API**: `/nowplaying`, `/cover`, `/stationlogo`, `/channels`, `/health`
+- **Web-Player** unter `http://host:4533/` (responsive für Mobilgeräte): Cover, Metadaten, Stream, MPD-Steuerung, Playlist-Auswahl
+- **HTTP-API**: Metadaten, Cover, Steuerung, Playlists, „Zum Löschen markieren“
 - Chromecast-taugliche Metadaten-Updates (Playback-Sessions, Image-Cache)
 
 ## Projektstruktur
@@ -48,6 +54,8 @@ mpdbackend/
 │   ├── mpdbackend_http.py     # HTTP-API
 │   ├── mpdbackend_mqtt.py     # MQTT-Publish + MPD-Befehle
 │   ├── mpdbackend_cover.py    # Cover-Extraktion und Cache
+│   ├── web/                   # Web-Player (HTML/CSS/JS)
+│   ├── home_assistant/        # Beispiele für MQTT-Integration (HA)
 │   ├── channels.json.example
 │   ├── install/
 │   │   ├── install.sh
@@ -103,6 +111,8 @@ curl http://127.0.0.1:4533/health
 curl http://127.0.0.1:4533/channels
 ```
 
+Web-Player im Browser: `http://127.0.0.1:4533/`
+
 ## Music-Assistant-Provider
 
 Provider in den Music-Assistant-Container (oder `custom_components`-Pfad) kopieren und in der MA-Oberfläche hinzufügen.
@@ -135,15 +145,17 @@ In Music Assistant **eine Backend-URL** konfigurieren (Standard-Metadaten-Server
 | Feld | Bedeutung |
 |------|-----------|
 | `name` | Anzeigename in Music Assistant |
-| `stream_url` | HTTP/Icecast-URL für die Wiedergabe in MA |
+| `stream_url` | HTTP/Icecast-URL für Audio (Music Assistant **und** Web-Player) |
 | `content_type` | `mp3`, `aac`, `ogg`, `flac` |
 | `backend_url` | Optional; Metadaten-Server für diesen Kanal |
+
+**Wichtig:** `stream_url` liefert das **Audio**, `backend_url` bzw. `:4533` liefert **Metadaten und Steuerung**. Beides wird für den Web-Player benötigt.
 
 ## Konfiguration (Server)
 
 Einstellungen kommen aus **`mpdbackend.env`** (neben `mpdbackend.py` oder `/etc/mpdbackend.env` mit systemd). Zugangsdaten sind nicht im Python-Code hardcodiert.
 
-Mit `MPDBACKEND_MQTT_ENABLED=false` läuft der Server nur mit HTTP (kein MQTT-Broker nötig).
+Mit `MPDBACKEND_MQTT_ENABLED=false` läuft der Server nur mit HTTP (kein MQTT-Broker nötig). Steuerung ist dann über die **HTTP-POST-Endpunkte** (`/cmd/player`, `/cmd/volume`, `/cmd/playlist`, `/cmd/savefile`) und den **Web-Player** möglich — funktional äquivalent zu den MQTT-`cmd/*`-Topics.
 
 Bei aktivem MQTT sind Pflichtfelder:
 
@@ -169,19 +181,50 @@ Häufige Optionen:
 | `MPDBACKEND_CHANNELS_FILE` | Pfad zur `channels.json` |
 | `MPDBACKEND_PUBLIC_BASE_URL` | Öffentliche URL dieses Backends |
 | `MPDBACKEND_HTTP_PORT` | HTTP-Port (Standard: `4533`) |
+| `MPDBACKEND_WEB_DIR` | Pfad zum Web-Player (Standard: `server/web/`) |
+| `MPDBACKEND_MARKED_FOR_DELETE` | Zieldatei für „Zum Löschen markieren“ (Standard: `data/mark_for_delete.cfg`) |
 
 Vollständige Liste: `server/systemd/mpdbackend.env.example`
+
+## Web-Player
+
+Unter **`http://host:4533/`** liefert mpdbackend eine responsive Web-Oberfläche — Layout und Schriftgrößen passen sich der Viewport-Größe des aufrufenden Geräts an (`clamp`, `vmin`, `dvh`; Portrait, Querformat, verschiedene Displaygrößen):
+
+- **Anzeige:** Cover, Titel, Künstler, Album, Fortschritt (elapsed/duration), Track-Position in der Playlist
+- **Sender:** Kanalauswahl über `channels.json` (Logo + `stream_url`)
+- **Playlist:** aktive Playlist und Auswahl aller MPD-Playlists
+- **Steuerung:** Play/Stop, Next/Back, Lautstärke (über HTTP → MPD)
+- **Stream:** Audio über `stream_url` aus `channels.json` (getrennt von Metadaten)
+- **Markieren:** rotes Kreuz → `POST /cmd/savefile` → schreibt MPD-Dateipfad nach `MPDBACKEND_MARKED_FOR_DELETE`
+
+Audio kommt vom **HTTP-Stream** (MPD `httpd`/Icecast), Steuerung und Metadaten vom **mpdbackend-Port 4533**.
+
+### Mark for delete
+
+`POST /cmd/savefile` überschreibt die konfigurierte Datei (Standard: `data/mark_for_delete.cfg`) mit **einer Zeile** — dem relativen MPD-Dateipfad unter `MPDBACKEND_MUSIC_ROOT`, z. B.:
+
+```text
+Künstler/Album/Titel.mp3
+```
+
+Ein externer Job kann diese Datei auslesen und den Eintrag verarbeiten (z. B. löschen, verschieben, in eine Queue schreiben).
 
 ## HTTP-API
 
 | Endpoint | Beschreibung |
 |----------|--------------|
+| `GET /` | Web-Player (statische Dateien aus `web/`) |
 | `GET /nowplaying` | Aktuelle MPD-Metadaten (JSON, siehe unten) |
+| `GET /playlists` | Verfügbare MPD-Playlists und aktive Playlist |
 | `GET /cover?name=cover_….jpg` | Gecachtes Cover |
 | `GET /stationlogo?channel=0` | Senderlogo für Kanal-ID |
 | `GET /channels` | Kanalregistry (`channels.json`) |
 | `GET /health` | MPD-/MQTT-Verbindungsstatus |
 | `GET /hash` | State-Hash zur Änderungserkennung |
+| `POST /cmd/player` | MPD-Transport: Plain-Text `play`, `stop`, `next`, `back` |
+| `POST /cmd/volume` | Lautstärke setzen: Plain-Text `0`–`100` |
+| `POST /cmd/playlist` | Playlist laden und abspielen: Plain-Text z. B. `Pop.m3u` |
+| `POST /cmd/savefile` | MPD-Dateipfad des aktuellen Titels nach `MPDBACKEND_MARKED_FOR_DELETE` schreiben |
 
 **Antwort von `/nowplaying`** (Beispiel):
 
@@ -194,11 +237,35 @@ Vollständige Liste: `server/systemd/mpdbackend.env.example`
   "songid": "42",
   "duration": 245.0,
   "elapsed": 83.5,
-  "cover_name": "cover_a1b2c3.jpg"
+  "cover_name": "cover_a1b2c3.jpg",
+  "volume": 45,
+  "playlist": "Pop.m3u",
+  "pos": 3,
+  "playlist_length": 12,
+  "file": "Künstler/Album/Titel.mp3"
 }
 ```
 
-`duration` und `elapsed` sind Sekunden (Float). Der Music-Assistant-Provider nutzt `cover_name` für den Image-Proxy.
+**Antwort von `/playlists`** (Beispiel):
+
+```json
+{
+  "playlists": ["Pop.m3u", "Rock.m3u"],
+  "active": "Pop.m3u"
+}
+```
+
+**Antwort von `POST /cmd/savefile`** (Beispiel):
+
+```json
+{
+  "ok": true,
+  "file": "Künstler/Album/Titel.mp3",
+  "path": "/opt/mpdbackend/data/mark_for_delete.cfg"
+}
+```
+
+`duration` und `elapsed` sind Sekunden (Float). `pos` ist 1-basiert. Der Music-Assistant-Provider nutzt `cover_name` für den Image-Proxy.
 
 ## MQTT
 
@@ -248,6 +315,8 @@ Bei `MPDBACKEND_MQTT_ENABLED=true` publiziert der Server Status und nimmt MPD-St
 ```
 
 Nach dem Laden einer Playlist meldet `mpdbackend/current` den aktiven Playlist-Namen (`playlist`). Die Liste aller Playlists steht auf `mpdbackend/playlists`.
+
+Beispiel-Konfigurationen für Home Assistant liegen unter `server/home_assistant/` (`mqtt.yaml_example`, `status_card.example`, …).
 
 ## Entwicklung
 

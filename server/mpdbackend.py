@@ -54,6 +54,10 @@ load_env_file()
 MQTT_ENABLED = env_bool("MPDBACKEND_MQTT_ENABLED", True)
 
 MUSIC_ROOT = os.getenv("MPDBACKEND_MUSIC_ROOT", "/home/musik")
+MARKED_FOR_DELETE = os.getenv(
+    "MPDBACKEND_MARKED_FOR_DELETE",
+    os.path.join(DEFAULT_DATA_DIR, "mark_for_delete.cfg"),
+)
 STATION_LOGO_DIR = os.getenv(
     "MPDBACKEND_STATION_LOGO_DIR", os.path.join(DEFAULT_DATA_DIR, "logos")
 )
@@ -129,6 +133,28 @@ CHANNEL_REGISTRY = ChannelRegistry()
 def build_full_path(rel_path):
     """Baut den absoluten Pfad zur Audiodatei unter MUSIC_ROOT."""
     return os.path.join(MUSIC_ROOT, rel_path)
+
+
+def save_current_track_file(song: dict, output_path: str | None = None) -> str:
+    """Schreibt den MPD-Dateipfad des aktuellen Titels in eine Textdatei."""
+    track_file = (song.get("file") or "").strip()
+    if not track_file:
+        raise ValueError("no current track file")
+
+    target = (output_path or MARKED_FOR_DELETE).strip()
+    if not target:
+        raise ValueError("output path not configured")
+
+    target_abs = os.path.abspath(target)
+    parent = os.path.dirname(target_abs)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+
+    with open(target_abs, "w", encoding="utf-8") as handle:
+        handle.write(track_file)
+        handle.write("\n")
+
+    return track_file
 
 
 def channel_logo_basename(channel_id: str) -> str:
