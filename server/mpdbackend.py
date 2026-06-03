@@ -12,9 +12,6 @@ from urllib.parse import quote
 
 from mpd import MPDClient
 
-from mpdbackend_cover import COVER_NAME_RE, CoverService
-
-
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_DATA_DIR = os.path.join(BASE_DIR, "data")
 DEFAULT_ENV_FILE = os.path.join(BASE_DIR, "mpdbackend.env")
@@ -55,6 +52,8 @@ def env_bool(name: str, default: bool = False) -> bool:
 
 
 load_env_file()
+
+from mpdbackend_cover import COVER_NAME_RE, CoverService  # noqa: E402
 
 
 # =========================
@@ -666,12 +665,15 @@ class Worker(threading.Thread):
         if sig == self.last_signature:
             return False
 
-        self.last_signature = sig
-
         file = song.get("file")
         if file:
-            self.cover.generate(build_full_path(file))
+            try:
+                self.cover.generate(build_full_path(file))
+            except Exception as err:
+                logger.warning("Cover generation failed for %s: %s", file, err)
+                self.cover.current = "blank.jpg"
 
+        self.last_signature = sig
         return True
 
     def publish(self, song, status):

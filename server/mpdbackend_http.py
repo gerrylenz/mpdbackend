@@ -13,7 +13,9 @@ import secrets
 import threading
 
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
-from urllib.parse import parse_qsl, urlparse
+from urllib.error import HTTPError, URLError
+from urllib.parse import parse_qsl, quote, urlencode, urlparse
+from urllib.request import Request, urlopen
 
 logger = logging.getLogger("mpdbackend.http")
 
@@ -116,6 +118,95 @@ class HTTPAPI:
             status, self._resolve_loaded_playlist(), available
         )
         return {"playlists": available, "active": active}
+
+    def _channel_backend_url(self, channel_id: str) -> str | None:
+        """backend_url aus channels.json für eine Kanal-ID."""
+        if not channel_id:
+            return None
+        channels = self.channel_registry.get()
+        entry = channels.get(channel_id)
+        if not isinstance(entry, dict):
+            return None
+        raw = str(entry.get("backend_url") or "").strip()
+        return raw.rstrip("/") if raw else None
+
+    def _local_backend_bases(self, req) -> set[str]:
+        """URLs, die auf diesen mpdbackend-Prozess zeigen (kein Proxy nötig)."""
+        public_base = os.getenv("MPDBACKEND_PUBLIC_BASE_URL", "").strip()
+
+        host = (req.headers.get("Host") or "").strip()
+        bases: set[str] = set()
+        if host:
+            bases.add(f"http://{host}".rstrip("/"))
+            bases.add(f"https://{host}".rstrip("/"))
+        port = http_port()
+        if host and ":" not in host:
+            bases.add(f"http://{host}:{port}".rstrip("/"))
+            bases.add(f"https://{host}:{port}".rstrip("/"))
+        if public_base:
+            bases.add(public_base.rstrip("/"))
+        return bases
+
+    def _proxy_needed(self, backend_url: str, req) -> bool:
+        """True wenn Metadaten von einem anderen mpdbackend geholt werden müssen."""
+        return backend_url.rstrip("/") not in self._local_backend_bases(req)
+
+    def _append_auth_to_path(self, req, path: str) -> str:
+        """Übernimmt ?password= aus der Client-Anfrage für geschützte Backend-Proxies."""
+        pwd = password_from_query(req)
+        if not pwd:
+            return path
+        parsed = urlparse(path)
+        query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+        query[WEB_AUTH_QUERY] = pwd
+        return f"{parsed.path}?{urlencode(query)}"
+
+    def _fetch_backend(
+        self, backend_url: str, path: str, timeout: float = 5
+    ) -> tuple[int, bytes]:
+        """HTTP-GET auf ein anderes mpdbackend (z. B. Now-Playing eines anderen MPD)."""
+        url = f"{backend_url.rstrip('/')}{path}"
+        request = Request(url, headers={"Accept": "*/*"})
+        try:
+            with urlopen(request, timeout=timeout) as resp:
+                return resp.status, resp.read()
+        except HTTPError as err:
+            return err.code, err.read()
+
+    def _proxy_backend_get(self, req, backend_url: str, path: str, content_type: str) -> bool:
+        """Leitet GET an backend_url weiter; True bei Erfolg."""
+        path = self._append_auth_to_path(req, path)
+        try:
+            status, body = self._fetch_backend(backend_url, path)
+        except (URLError, TimeoutError, OSError) as err:
+            logger.warning("Backend proxy %s%s failed: %s", backend_url, path, err)
+            self._send_json(req, 502, {"ok": False, "error": "backend unreachable"})
+            return True
+
+        if status in (401, 403):
+            req.send_response(status)
+            req.send_header("Content-Type", "application/json")
+            req.send_header("Cache-Control", "no-store")
+            req.send_header("Content-Length", str(len(body)))
+            req.end_headers()
+            req.wfile.write(body)
+            return True
+
+        if status != 200:
+            logger.warning(
+                "Backend proxy %s%s returned HTTP %s", backend_url, path, status
+            )
+            req.send_response(502)
+            req.end_headers()
+            return True
+
+        req.send_response(200)
+        req.send_header("Content-Type", content_type)
+        req.send_header("Cache-Control", "no-store")
+        req.send_header("Content-Length", str(len(body)))
+        req.end_headers()
+        req.wfile.write(body)
+        return True
 
     def start(self) -> None:
         """Startet den Threading-HTTP-Server im Hintergrund."""
@@ -274,6 +365,14 @@ class HTTPAPI:
             resolve_active_playlist_name,
         )
 
+        parsed = urlparse(req.path)
+        query = dict(parse_qsl(parsed.query))
+        channel_id = query.get("channel", "").strip()
+        backend = self._channel_backend_url(channel_id)
+        if backend and self._proxy_needed(backend, req):
+            self._proxy_backend_get(req, backend, "/nowplaying", "application/json")
+            return
+
         song = self.worker.last_song or {}
         status = self.worker.last_status or {}
         elapsed_status = self.worker.build_elapsed_status()
@@ -316,6 +415,14 @@ class HTTPAPI:
 
     def handle_playlists(self, req):
         """GET /playlists – verfügbare MPD-Playlists und aktive Playlist."""
+        parsed = urlparse(req.path)
+        query = dict(parse_qsl(parsed.query))
+        channel_id = query.get("channel", "").strip()
+        backend = self._channel_backend_url(channel_id)
+        if backend and self._proxy_needed(backend, req):
+            self._proxy_backend_get(req, backend, "/playlists", "application/json")
+            return
+
         raw = json.dumps(self._build_playlist_state()).encode("utf-8")
 
         req.send_response(200)
@@ -345,6 +452,17 @@ class HTTPAPI:
         parsed = urlparse(req.path)
         query = dict(parse_qsl(parsed.query))
         name = query.get("name", "")
+        channel_id = query.get("channel", "").strip()
+        backend = self._channel_backend_url(channel_id)
+        if (
+            name
+            and COVER_NAME_RE.match(name)
+            and backend
+            and self._proxy_needed(backend, req)
+        ):
+            proxy_path = f"/cover?{urlencode({'name': name})}"
+            self._proxy_backend_get(req, backend, proxy_path, "image/jpeg")
+            return
 
         if not name or not COVER_NAME_RE.match(name):
             req.send_response(404)
@@ -380,6 +498,29 @@ class HTTPAPI:
         parsed = urlparse(req.path)
         query = dict(parse_qsl(parsed.query))
         channel_id = query.get("channel", "").strip()
+        backend = self._channel_backend_url(channel_id)
+        if backend and self._proxy_needed(backend, req):
+            proxy_path = self._append_auth_to_path(
+                req, f"/stationlogo?channel={quote(channel_id)}"
+            )
+            try:
+                status, body = self._fetch_backend(backend, proxy_path)
+                if status == 200:
+                    content_type = "image/png"
+                    req.send_response(200)
+                    req.send_header("Content-Type", content_type)
+                    req.send_header("Cache-Control", "no-store")
+                    req.send_header("Content-Length", str(len(body)))
+                    req.end_headers()
+                    req.wfile.write(body)
+                    return
+            except (HTTPError, URLError, TimeoutError, OSError) as err:
+                logger.debug(
+                    "Station logo proxy %s%s failed, trying local: %s",
+                    backend,
+                    proxy_path,
+                    err,
+                )
 
         resolved = resolve_station_logo_path(channel_id)
         if not resolved:

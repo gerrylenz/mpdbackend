@@ -85,6 +85,16 @@ function apiPath(path) {
   return `${API}${url.pathname}${url.search}`;
 }
 
+/** Kanal-Parameter für Metadaten-Proxy (backend_url aus channels.json). */
+function withChannelQuery(path, channelId) {
+  if (!channelId) {
+    return path;
+  }
+  const url = new URL(path, window.location.href);
+  url.searchParams.set("channel", channelId);
+  return `${url.pathname}${url.search}`;
+}
+
 async function fetchJson(path) {
   const response = await fetch(apiPath(path), { cache: "no-store" });
   if (!response.ok) {
@@ -139,10 +149,11 @@ function resolveArtworkUrl(data) {
     return null;
   }
 
-  return new URL(
-    `${API}/cover?name=${encodeURIComponent(coverName)}`,
-    window.location.href,
-  ).href;
+  const coverPath = withChannelQuery(
+    `/cover?name=${encodeURIComponent(coverName)}`,
+    state.activeChannel,
+  );
+  return new URL(`${API}${coverPath}`, window.location.href).href;
 }
 
 function mediaMetadataKey(data) {
@@ -300,9 +311,14 @@ function updateCover(coverName) {
     return;
   }
 
-  if (coverName !== state.lastCoverName) {
-    state.lastCoverName = coverName;
-    els.cover.src = `${API}/cover?name=${encodeURIComponent(coverName)}&t=${Date.now()}`;
+  const coverKey = `${state.activeChannel}\0${coverName}`;
+  if (coverKey !== state.lastCoverName) {
+    state.lastCoverName = coverKey;
+    const coverPath = withChannelQuery(
+      `/cover?name=${encodeURIComponent(coverName)}`,
+      state.activeChannel,
+    );
+    els.cover.src = `${API}${coverPath}&t=${Date.now()}`;
   }
 
   els.cover.onload = () => {
@@ -454,14 +470,16 @@ async function loadChannels() {
 }
 
 async function loadPlaylists() {
-  const data = await fetchJson("/playlists");
+  const path = withChannelQuery("/playlists", state.activeChannel);
+  const data = await fetchJson(path);
   state.playlists = Array.isArray(data.playlists) ? data.playlists : [];
   renderPlaylistOptions(state.playlists, data.active || "");
 }
 
 async function pollNowPlaying() {
   try {
-    const data = await fetchJson("/nowplaying");
+    const path = withChannelQuery("/nowplaying", state.activeChannel);
+    const data = await fetchJson(path);
     updateNowPlaying(data);
   } catch (err) {
     console.warn(err);
@@ -482,7 +500,13 @@ els.channelSelect.addEventListener("change", () => {
     els.stream.pause();
     setStreamUi(false);
   }
+  state.lastCoverName = "";
+  state.lastNowPlaying = null;
   updateChannelUi(els.channelSelect.value);
+  pollNowPlaying().catch(console.warn);
+  if (state.controlGranted) {
+    loadPlaylists().catch(console.warn);
+  }
 });
 
 els.playlistSelect.addEventListener("change", async () => {
