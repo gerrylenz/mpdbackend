@@ -8,7 +8,7 @@ from unittest.mock import Mock
 import pytest
 from music_assistant_models.enums import ContentType
 
-from mpdbackend.provider import COVER_NAME_RE, MPDBackendRadioProvider
+from mpdbackend.provider import COVER_NAME_RE, COVER_PATH_RE, MPDBackendRadioProvider
 
 
 @pytest.fixture
@@ -16,6 +16,7 @@ def provider() -> MPDBackendRadioProvider:
     """Return a provider instance without full Music Assistant bootstrapping."""
     config = Mock()
     config.instance_id = "mpdbackend_test"
+    config.get_value.return_value = "http://default.example:4533"
     return MPDBackendRadioProvider(
         mass=Mock(),
         manifest=Mock(),
@@ -69,3 +70,53 @@ def test_build_track_key_prefers_songid(provider: MPDBackendRadioProvider) -> No
 def test_cover_name_regex(cover_name: str, expected: bool) -> None:
     """Cover filenames must match the provider-side safety pattern."""
     assert bool(COVER_NAME_RE.match(cover_name)) is expected
+
+
+def test_channel_backend_url_uses_channels_json(provider: MPDBackendRadioProvider) -> None:
+    """Per-channel backend_url must override the provider default."""
+    provider._channels = {
+        "0": {
+            "name": "A",
+            "description": "A",
+            "stream_url": "http://stream/a",
+            "content_type": ContentType.MP3,
+            "backend_url": "http://edeka.example:4533",
+        },
+        "1": {
+            "name": "B",
+            "description": "B",
+            "stream_url": "http://stream/b",
+            "content_type": ContentType.MP3,
+            "backend_url": "http://home.example:4534",
+        },
+    }
+
+    assert (
+        provider._channel_backend_url("0", provider._channels)
+        == "http://edeka.example:4533"
+    )
+    assert (
+        provider._channel_backend_url("1", provider._channels)
+        == "http://home.example:4534"
+    )
+
+
+def test_cover_fetch_url_uses_channel_backend(provider: MPDBackendRadioProvider) -> None:
+    """Album covers must be loaded from the channel's mpdbackend, not the MA default."""
+    provider._channels = {
+        "1": {
+            "name": "Home",
+            "description": "Home",
+            "stream_url": "http://stream/b",
+            "content_type": ContentType.MP3,
+            "backend_url": "http://home.example:4534",
+        },
+    }
+    cover_name = "cover_abcdef0123456789abcdef01.jpg"
+
+    assert provider._cover_image_path("1", cover_name) == f"cover:1:{cover_name}"
+    assert COVER_PATH_RE.match(provider._cover_image_path("1", cover_name))
+    assert (
+        provider._cover_fetch_url("1", cover_name)
+        == f"http://home.example:4534/cover?name={cover_name}"
+    )

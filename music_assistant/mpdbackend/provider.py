@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import time
 from typing import TYPE_CHECKING, Any
+from urllib.parse import quote
 
 from music_assistant_models.enums import ContentType, ImageType, MediaType, StreamType
 from music_assistant_models.errors import MediaNotFoundError, UnplayableMediaError
@@ -32,6 +33,9 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
 COVER_NAME_RE = re.compile(r"^cover_[0-9a-f]{16,64}\.jpg$")
+COVER_PATH_RE = re.compile(
+    r"^cover:([0-9a-zA-Z_-]{1,32}):(cover_[0-9a-f]{16,64}\.jpg)$"
+)
 STATION_LOGO_PREFIX = "stationlogo:"
 
 
@@ -187,6 +191,16 @@ class MPDBackendRadioProvider(MusicProvider):
         results.radio = radios
         return results
 
+    @staticmethod
+    def _cover_image_path(channel_id: str, cover_name: str) -> str:
+        """Provider-local image path: routes resolve_image to the channel backend."""
+        return f"cover:{channel_id}:{cover_name}"
+
+    def _cover_fetch_url(self, channel_id: str, cover_name: str) -> str:
+        """Absolute /cover URL on the mpdbackend that owns this channel."""
+        backend = self._channel_backend_url_for_id(channel_id)
+        return f"{backend}/cover?name={quote(cover_name)}"
+
     async def resolve_image(self, path: str) -> bytes:
         """Fetch cover or station logo bytes from mpdbackend."""
         if not path:
@@ -200,11 +214,24 @@ class MPDBackendRadioProvider(MusicProvider):
         if path.startswith(("http://", "https://")) and "/stationlogo" in path:
             return await self._fetch_image(path, "station logo")
 
-        if not COVER_NAME_RE.match(path):
-            raise FileNotFoundError(f"Invalid image path: {path}")
+        cover_match = COVER_PATH_RE.match(path)
+        if cover_match:
+            channel_id, cover_name = cover_match.groups()
+            return await self._fetch_image(
+                self._cover_fetch_url(channel_id, cover_name),
+                "cover",
+            )
 
-        url = f"{self.default_backend_url}/cover?name={path}"
-        return await self._fetch_image(url, "cover")
+        if COVER_NAME_RE.match(path):
+            self.logger.warning(
+                "Cover path %s without channel id; using default backend %s",
+                path,
+                self.default_backend_url,
+            )
+            url = f"{self.default_backend_url}/cover?name={quote(path)}"
+            return await self._fetch_image(url, "cover")
+
+        raise FileNotFoundError(f"Invalid image path: {path}")
 
     async def _fetch_station_logo(
         self, channel_id: str, channels: dict[str, RadioMpdChannel]
@@ -332,18 +359,19 @@ class MPDBackendRadioProvider(MusicProvider):
             self.logger.warning("Could not fetch mpdbackend metadata for %s: %s", channel_id, err)
             return {}
 
-    async def _warm_cover_cache(self, cover_name: str) -> None:
+    async def _warm_cover_cache(self, channel_id: str, cover_name: str) -> None:
         """Pre-fetch cover via imageproxy so players receive a cached JPEG URL."""
+        image_path = self._cover_image_path(channel_id, cover_name)
         try:
             await self.mass.metadata.get_thumbnail(
-                cover_name,
+                image_path,
                 provider=self.instance_id,
                 size=512,
                 image_format="JPEG",
             )
-            self.logger.debug("Cover name cache warm %s:", cover_name)
+            self.logger.debug("Cover cache warm %s", image_path)
         except Exception as err:
-            self.logger.warning("Cover cache warm failed for %s: %s", cover_name, err)
+            self.logger.warning("Cover cache warm failed for %s: %s", image_path, err)
 
     def _cover_name_from_nowplaying(self, nowplaying: dict[str, Any]) -> str:
         """Return provider-local cover cache name from nowplaying payload."""
@@ -353,14 +381,16 @@ class MPDBackendRadioProvider(MusicProvider):
             return cover_name
         return ""
 
-    def _image_from_nowplaying(self, nowplaying: dict[str, Any]) -> MediaItemImage | None:
+    def _image_from_nowplaying(
+        self, nowplaying: dict[str, Any], channel_id: str
+    ) -> MediaItemImage | None:
         """Build MediaItemImage that routes through resolve_image / imageproxy."""
         cover_name = self._cover_name_from_nowplaying(nowplaying)
         if not cover_name:
             return None
         return MediaItemImage(
             type=ImageType.THUMB,
-            path=cover_name,
+            path=self._cover_image_path(channel_id, cover_name),
             provider=self.instance_id,
             remotely_accessible=False,
         )
@@ -379,7 +409,7 @@ class MPDBackendRadioProvider(MusicProvider):
         album = str(nowplaying.get("album") or "")
 
         image_url: str | None = None
-        if image := self._image_from_nowplaying(nowplaying):
+        if image := self._image_from_nowplaying(nowplaying, item_id):
             image_url = self.mass.metadata.get_image_url(
                 image, size=512, image_format="JPEG"
             )
@@ -408,7 +438,7 @@ class MPDBackendRadioProvider(MusicProvider):
         """Push fresh metadata to players right after a stream (re)start."""
         cover_name = self._cover_name_from_nowplaying(nowplaying)
         if cover_name:
-            await self._warm_cover_cache(cover_name)
+            await self._warm_cover_cache(channel_id, cover_name)
         playback_session = self._playback_sessions.get(channel_id)
         await self._push_stream_metadata_to_active_queues(
             nowplaying,
@@ -426,7 +456,7 @@ class MPDBackendRadioProvider(MusicProvider):
 
         cover_name = self._cover_name_from_nowplaying(nowplaying)
         if cover_name:
-            await self._warm_cover_cache(cover_name)
+            await self._warm_cover_cache(channel_id, cover_name)
         else:
             self.logger.info(
                 "TRACK CHANGE [%s] no cover in nowplaying (cover_name=%r)",
@@ -509,7 +539,7 @@ class MPDBackendRadioProvider(MusicProvider):
         elif stream_restarted:
             cover_name = self._cover_name_from_nowplaying(nowplaying)
             if cover_name:
-                await self._warm_cover_cache(cover_name)
+                await self._warm_cover_cache(channel_id, cover_name)
 
         streamdetails.stream_metadata = await self._stream_metadata_from_nowplaying(
             nowplaying,
