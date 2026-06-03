@@ -21,8 +21,15 @@ DEFAULT_ENV_FILE = os.path.join(BASE_DIR, "mpdbackend.env")
 
 
 def load_env_file() -> None:
-    """Lädt mpdbackend.env in os.environ (bestehende Variablen bleiben unverändert)."""
-    env_path = os.getenv("MPDBACKEND_ENV_FILE", DEFAULT_ENV_FILE)
+    """
+    Lädt Variablen aus einer Env-Datei.
+
+    Mit MPDBACKEND_ENV_FILE: Werte aus dieser Datei (für Multi-Instanz).
+    Ohne: Standard mpdbackend.env neben mpdbackend.py — bereits gesetzte
+    Umgebungsvariablen (z. B. systemd EnvironmentFile) werden nicht überschrieben.
+    """
+    explicit = os.getenv("MPDBACKEND_ENV_FILE", "").strip()
+    env_path = explicit or DEFAULT_ENV_FILE
     if not os.path.isfile(env_path):
         return
 
@@ -33,7 +40,9 @@ def load_env_file() -> None:
                 continue
             key, _, value = line.partition("=")
             key = key.strip()
-            if key:
+            if not key:
+                continue
+            if explicit or key not in os.environ:
                 os.environ[key] = value.strip()
 
 

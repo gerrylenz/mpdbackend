@@ -18,7 +18,11 @@ from urllib.parse import parse_qsl, urlparse
 logger = logging.getLogger("mpdbackend.http")
 
 HTTP_HOST = "0.0.0.0"
-HTTP_PORT = int(os.getenv("MPDBACKEND_HTTP_PORT", "4533"))
+
+
+def http_port() -> int:
+    """HTTP-Port aus der Umgebung (nach load_env_file / systemd)."""
+    return int(os.getenv("MPDBACKEND_HTTP_PORT", "4533"))
 WEB_DIR = os.getenv(
     "MPDBACKEND_WEB_DIR",
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "web"),
@@ -200,7 +204,8 @@ class HTTPAPI:
                 """Unterdrückt Standard-Access-Log-Ausgaben."""
                 return
 
-        server = ThreadingHTTPServer((HTTP_HOST, HTTP_PORT), Handler)
+        port = http_port()
+        server = ThreadingHTTPServer((HTTP_HOST, port), Handler)
         server.worker = self.worker
 
         threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -209,12 +214,12 @@ class HTTPAPI:
                 logger.info(
                     "Web UI at http://%s:%s/ (guest: stream+channels; full: /?%s=…)",
                     HTTP_HOST,
-                    HTTP_PORT,
+                    port,
                     WEB_AUTH_QUERY,
                 )
             else:
-                logger.info("Web UI at http://%s:%s/", HTTP_HOST, HTTP_PORT)
-        logger.info("HTTP listening on %s:%s", HTTP_HOST, HTTP_PORT)
+                logger.info("Web UI at http://%s:%s/", HTTP_HOST, port)
+        logger.info("HTTP listening on %s:%s", HTTP_HOST, port)
 
     @staticmethod
     def _read_body(req) -> bytes:

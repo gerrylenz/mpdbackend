@@ -46,6 +46,16 @@
         <p id="album" class="album"></p>
       </div>
 
+      <div class="progress-block">
+        <div class="progress-track" aria-hidden="true">
+          <div id="progress-bar" class="progress-bar"></div>
+        </div>
+        <div class="progress-times">
+          <span id="elapsed">0:00</span>
+          <span id="duration">0:00</span>
+        </div>
+      </div>
+
       <div id="control-panel" class="control-panel">
         <div class="playlist-block">
           <div class="playlist-head">
@@ -58,16 +68,6 @@
               <option value="">Laden…</option>
             </select>
           </label>
-        </div>
-
-        <div class="progress-block">
-          <div class="progress-track" aria-hidden="true">
-            <div id="progress-bar" class="progress-bar"></div>
-          </div>
-          <div class="progress-times">
-            <span id="elapsed">0:00</span>
-            <span id="duration">0:00</span>
-          </div>
         </div>
 
         <div class="controls">
@@ -105,9 +105,6 @@
           <span id="stream-label">Stream starten</span>
         </button>
         <p class="hint">Audio über HTTP-Stream · Senderwahl oben</p>
-        <p id="access-hint" class="hint access-hint hidden">
-          MPD-Steuerung nur mit <code>?password=…</code> in der URL (Lesezeichen nicht ohne Passwort öffnen)
-        </p>
       </div>
     </main>
   </div>
