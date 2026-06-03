@@ -61,7 +61,7 @@ load_env_file()
 # CONFIG
 # =========================
 
-MQTT_ENABLED = env_bool("MPDBACKEND_MQTT_ENABLED", True)
+MQTT_ENABLED = env_bool("MPDBACKEND_MQTT_ENABLED", False)
 
 MUSIC_ROOT = os.getenv("MPDBACKEND_MUSIC_ROOT", "/home/musik")
 MARKED_FOR_DELETE = os.getenv(
@@ -743,13 +743,20 @@ def main():
     logging.basicConfig(level=logging.INFO)
     logging.getLogger("mpd.base").setLevel(logging.WARNING)
 
+    env_path = os.getenv("MPDBACKEND_ENV_FILE", DEFAULT_ENV_FILE)
+    if os.path.isfile("/etc/mpdbackend.env") and env_path == DEFAULT_ENV_FILE:
+        logger.info(
+            "Config: systemd EnvironmentFile=/etc/mpdbackend.env "
+            "(values there override %s)",
+            DEFAULT_ENV_FILE,
+        )
+
     mpd = MPD()
     worker = Worker(mpd)
 
     if MQTT_ENABLED:
         from mpdbackend_mqtt import MqttPublisher
 
-        env_path = os.getenv("MPDBACKEND_ENV_FILE", DEFAULT_ENV_FILE)
         publisher = MqttPublisher(worker)
         publisher.start(env_path)
         worker.mqtt_publisher = publisher
