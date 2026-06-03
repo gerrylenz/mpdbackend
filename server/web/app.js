@@ -30,7 +30,6 @@ const els = {
   iconPause: document.getElementById("icon-pause"),
   stream: document.getElementById("stream"),
   controlPanel: document.getElementById("control-panel"),
-  accessHint: document.getElementById("access-hint"),
 };
 
 const state = {
@@ -114,9 +113,6 @@ async function postText(path, body) {
 function applyControlAccess() {
   const guest = state.authRequired && !state.controlGranted;
   document.body.classList.toggle("mode-guest", guest);
-  if (els.accessHint) {
-    els.accessHint.classList.toggle("hidden", !guest);
-  }
 }
 
 async function loadWebSession() {
