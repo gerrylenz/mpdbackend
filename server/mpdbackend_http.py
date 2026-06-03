@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import mimetypes
@@ -24,10 +23,17 @@ WEB_DIR = os.getenv(
     "MPDBACKEND_WEB_DIR",
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "web"),
 )
-WEB_PASSWORD = os.getenv("MPDBACKEND_WEB_PASSWORD", "").strip()
-WEB_AUTH_COOKIE = "mpdbackend_web"
 WEB_AUTH_QUERY = "password"
-WEB_AUTH_COOKIE_MAX_AGE = 30 * 24 * 3600
+
+_WEB_PASSWORD_DISABLED = frozenset({"0", "false", "no", "off"})
+
+
+def read_web_password() -> str:
+    """Aktuelles Web-Player-Passwort aus der Umgebung (leer = kein Schutz)."""
+    raw = os.getenv("MPDBACKEND_WEB_PASSWORD", "").strip()
+    if raw.lower() in _WEB_PASSWORD_DISABLED:
+        return ""
+    return raw
 
 STATIC_FILES = {
     "/": "index.html",
@@ -41,7 +47,7 @@ WEB_PROTECTED_GET = frozenset(STATIC_FILES)
 
 def web_auth_enabled() -> bool:
     """True wenn MPDBACKEND_WEB_PASSWORD gesetzt ist."""
-    return bool(WEB_PASSWORD)
+    return bool(read_web_password())
 
 
 def path_requires_web_auth(path: str) -> bool:
@@ -49,84 +55,34 @@ def path_requires_web_auth(path: str) -> bool:
     return path in WEB_PROTECTED_GET
 
 
-def web_auth_token() -> str:
-    """Cookie-Wert aus dem konfigurierten Passwort (nicht das Klartext-Passwort)."""
-    return hashlib.sha256(WEB_PASSWORD.encode("utf-8")).hexdigest()
-
-
-def parse_cookies(header: str) -> dict[str, str]:
-    cookies: dict[str, str] = {}
-    for part in header.split(";"):
-        part = part.strip()
-        if not part or "=" not in part:
-            continue
-        name, value = part.split("=", 1)
-        cookies[name.strip()] = value.strip()
-    return cookies
-
-
-def web_auth_cookie_valid(req) -> bool:
-    token = parse_cookies(req.headers.get("Cookie", "")).get(WEB_AUTH_COOKIE, "")
-    if not token:
-        return False
-    return secrets.compare_digest(token, web_auth_token())
-
-
 def password_from_query(req) -> str:
     query = dict(parse_qsl(urlparse(req.path).query))
     return query.get(WEB_AUTH_QUERY, "")
 
 
-def query_has_password(req) -> bool:
-    return WEB_AUTH_QUERY in dict(parse_qsl(urlparse(req.path).query))
+def web_control_granted(req) -> bool:
+    """Vollzugriff nur bei gültigem ?password= in der Request-URL."""
+    if not web_auth_enabled():
+        return True
 
-
-def build_web_auth_cookie() -> str:
-    return (
-        f"{WEB_AUTH_COOKIE}={web_auth_token()}; Path=/; HttpOnly; "
-        f"SameSite=Lax; Max-Age={WEB_AUTH_COOKIE_MAX_AGE}"
+    query_password = password_from_query(req)
+    configured = read_web_password()
+    return bool(
+        query_password and secrets.compare_digest(query_password, configured)
     )
 
 
-def evaluate_web_static_access(req) -> tuple[bool, bool, str | None]:
-    """
-    Zugriff auf statische Web-Player-Dateien prüfen.
-
-    Returns:
-        (granted, set_cookie, redirect_path)
-    """
-    if not web_auth_enabled():
-        return True, False, None
-
-    if web_auth_cookie_valid(req):
-        return True, False, None
-
-    query_password = password_from_query(req)
-    if query_password and secrets.compare_digest(query_password, WEB_PASSWORD):
-        path = urlparse(req.path).path
-        if query_has_password(req) and path in ("/", "/index.html"):
-            return True, True, "/" if path == "/" else "/index.html"
-        return True, True, None
-
-    return False, False, None
-
-
-def send_web_access_denied(req) -> None:
-    """403 wenn Web-Player ohne gültiges URL-Passwort aufgerufen wird."""
-    body = (
-        "<!DOCTYPE html><html lang=\"de\"><head><meta charset=\"utf-8\">"
-        "<title>403 Forbidden</title></head><body>"
-        "<h1>403 Forbidden</h1>"
-        f"<p>Web-Player: Passwort als URL-Parameter, z.&nbsp;B. "
-        f"<code>/?{WEB_AUTH_QUERY}=…</code></p>"
-        "</body></html>"
-    ).encode("utf-8")
-    req.send_response(403)
-    req.send_header("Content-Type", "text/html; charset=utf-8")
-    req.send_header("Cache-Control", "no-store")
-    req.send_header("Content-Length", str(len(body)))
-    req.end_headers()
-    req.wfile.write(body)
+def send_web_control_denied(req) -> None:
+    """403 JSON wenn MPD-Steuerung ohne gültiges Web-Passwort aufgerufen wird."""
+    HTTPAPI._send_json(
+        req,
+        403,
+        {
+            "ok": False,
+            "error": "control requires password",
+            "hint": f"Open /?{WEB_AUTH_QUERY}=… for full access",
+        },
+    )
 
 
 class HTTPAPI:
@@ -159,6 +115,9 @@ class HTTPAPI:
 
     def start(self) -> None:
         """Startet den Threading-HTTP-Server im Hintergrund."""
+        from mpdbackend import load_env_file
+
+        load_env_file()
         api = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -167,20 +126,12 @@ class HTTPAPI:
                 """Leitet GET-Anfragen an die passenden Handler weiter."""
                 path = urlparse(self.path).path
 
+                if path == "/web/session":
+                    api.handle_web_session(self)
+                    return
+
                 if path in STATIC_FILES:
-                    granted, set_cookie, redirect = evaluate_web_static_access(self)
-                    if not granted:
-                        send_web_access_denied(self)
-                        return
-                    if redirect:
-                        self.send_response(302)
-                        self.send_header("Location", redirect)
-                        if set_cookie:
-                            self.send_header("Set-Cookie", build_web_auth_cookie())
-                        self.send_header("Cache-Control", "no-store")
-                        self.end_headers()
-                        return
-                    api.handle_static(self, STATIC_FILES[path], set_auth_cookie=set_cookie)
+                    api.handle_static(self, STATIC_FILES[path])
                     return
 
                 if path == "/hash":
@@ -204,6 +155,9 @@ class HTTPAPI:
                     return
 
                 if path == "/playlists":
+                    if web_auth_enabled() and not web_control_granted(self):
+                        send_web_control_denied(self)
+                        return
                     api.handle_playlists(self)
                     return
 
@@ -217,6 +171,11 @@ class HTTPAPI:
             def do_POST(self):
                 """Steuerbefehle an MPD (Analog zu MQTT cmd-Topics)."""
                 path = urlparse(self.path).path
+
+                if path.startswith("/cmd/"):
+                    if web_auth_enabled() and not web_control_granted(self):
+                        send_web_control_denied(self)
+                        return
 
                 if path == "/cmd/player":
                     api.handle_cmd_player(self)
@@ -248,7 +207,7 @@ class HTTPAPI:
         if os.path.isdir(WEB_DIR):
             if web_auth_enabled():
                 logger.info(
-                    "Web UI at http://%s:%s/?%s=… (password in URL)",
+                    "Web UI at http://%s:%s/ (guest: stream+channels; full: /?%s=…)",
                     HTTP_HOST,
                     HTTP_PORT,
                     WEB_AUTH_QUERY,
@@ -274,7 +233,7 @@ class HTTPAPI:
         req.end_headers()
         req.wfile.write(raw)
 
-    def handle_static(self, req, filename: str, *, set_auth_cookie: bool = False) -> None:
+    def handle_static(self, req, filename: str) -> None:
         """Liefert Dateien aus dem web/-Verzeichnis aus."""
         safe_name = os.path.basename(filename)
         path = os.path.join(WEB_DIR, safe_name)
@@ -296,8 +255,6 @@ class HTTPAPI:
 
         req.send_response(200)
         req.send_header("Content-Type", content_type)
-        if set_auth_cookie:
-            req.send_header("Set-Cookie", build_web_auth_cookie())
         if safe_name == "index.html":
             req.send_header("Cache-Control", "no-store")
         req.send_header("Content-Length", str(len(data)))
@@ -447,6 +404,20 @@ class HTTPAPI:
         req.end_headers()
         req.wfile.write(raw)
 
+    def handle_web_session(self, req) -> None:
+        """GET /web/session – Gast vs. Vollzugriff für den Web-Player."""
+        auth_required = web_auth_enabled()
+        control = web_control_granted(req)
+        self._send_json(
+            req,
+            200,
+            {
+                "auth_required": auth_required,
+                "control_granted": control,
+                "login_query": WEB_AUTH_QUERY,
+            },
+        )
+
     def handle_health(self, req):
         """GET /health – Verbindungsstatus MPD und optional MQTT."""
         mpd_connected = self.worker.mpd.client is not None
@@ -465,6 +436,8 @@ class HTTPAPI:
             "mpd": "connected" if mpd_connected else "disconnected",
             "mqtt": mqtt_status,
             "mqtt_enabled": self.mqtt_enabled,
+            "web_auth_required": web_auth_enabled(),
+            "web_control_granted": web_control_granted(req),
         }
         raw = json.dumps(data).encode("utf-8")
 

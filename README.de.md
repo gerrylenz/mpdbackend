@@ -247,7 +247,7 @@ Häufige Optionen:
 | `MPDBACKEND_PUBLIC_BASE_URL` | Öffentliche HTTPS-URL (Cover für Media Session/CarPlay; in `/nowplaying` als `media_image_url`) |
 | `MPDBACKEND_HTTP_PORT` | HTTP-Port (Standard: `4533`) |
 | `MPDBACKEND_WEB_DIR` | Pfad zum Web-Player (Standard: `server/web/`) |
-| `MPDBACKEND_WEB_PASSWORD` | Passwort für Web-Player-Seite: Aufruf mit `/?password=…` (nur Browser-UI; API offen) |
+| `MPDBACKEND_WEB_PASSWORD` | Passwort für MPD-Steuerung im Web-Player (`/?password=…`); ohne Passwort nur Stream + Senderwahl |
 | `MPDBACKEND_MARKED_FOR_DELETE` | Zieldatei für „Zum Löschen markieren“ (Standard: `data/mark_for_delete.cfg`) |
 
 Vollständige Liste: `server/systemd/mpdbackend.env.example`
@@ -256,7 +256,7 @@ Vollständige Liste: `server/systemd/mpdbackend.env.example`
 
 Unter **`http://host:4533/`** liefert mpdbackend eine responsive Web-Oberfläche — Layout und Schriftgrößen passen sich der Viewport-Größe des aufrufenden Geräts an (`clamp`, `vmin`, `dvh`; Portrait, Querformat, verschiedene Displaygrößen):
 
-**Absicherung:** `MPDBACKEND_WEB_PASSWORD` setzen → Web-Player nur mit Passwort in der URL, z. B. `http://host:4533/?password=geheim`. Nach dem ersten Aufruf setzt der Server ein Cookie (CSS/JS ohne Passwort in der URL). HTTP-API (`/nowplaying`, `/playlists`, `/cmd/*`, …) bleibt **ohne** Passwort erreichbar.
+**Absicherung:** `MPDBACKEND_WEB_PASSWORD` setzen → ohne `?password=…` in der URL: nur **Senderwahl + Stream** (keine MPD-Steuerung). Mit `http://host:4533/?password=geheim` in der URL: **voller Zugriff** (Playlists, Play/Stop, Lautstärke, …). Es gibt **kein Cookie** — das Passwort muss in der URL bleiben (Lesezeichen mit Passwort). `POST /cmd/*` und `GET /playlists` prüfen `?password=`; Stream/`/channels`/`/nowplaying` ohne Passwort.
 
 - **Anzeige:** Cover, Titel, Künstler, Album, Fortschritt (elapsed/duration), Track-Position in der Playlist
 - **Sender:** Kanalauswahl über `channels.json` (Logo + `stream_url`)
@@ -284,7 +284,8 @@ Ein externer Job kann diese Datei auslesen und den Eintrag verarbeiten (z. B. 
 
 | Endpoint | Beschreibung |
 |----------|--------------|
-| `GET /` | Web-Player (statische Dateien; mit `/?password=…` wenn gesetzt) |
+| `GET /` | Web-Player (Gast immer; Vollzugriff mit `/?password=…` wenn gesetzt) |
+| `GET /web/session` | `{ auth_required, control_granted }` für Gast vs. Vollzugriff |
 | `GET /nowplaying` | Aktuelle MPD-Metadaten (JSON, siehe unten) |
 | `GET /playlists` | Verfügbare MPD-Playlists und aktive Playlist |
 | `GET /cover?name=cover_….jpg` | Gecachtes Cover |

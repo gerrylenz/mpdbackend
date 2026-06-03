@@ -33,7 +33,7 @@ def load_env_file() -> None:
                 continue
             key, _, value = line.partition("=")
             key = key.strip()
-            if key and key not in os.environ:
+            if key:
                 os.environ[key] = value.strip()
 
 

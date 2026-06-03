@@ -249,7 +249,7 @@ Common options:
 | `MPDBACKEND_PUBLIC_BASE_URL` | Public HTTPS URL (cover for Media Session/CarPlay; exposed in `/nowplaying` as `media_image_url`) |
 | `MPDBACKEND_HTTP_PORT` | HTTP port (default: `4533`) |
 | `MPDBACKEND_WEB_DIR` | Web player files (default: `server/web/`) |
-| `MPDBACKEND_WEB_PASSWORD` | Web player password: open with `/?password=…` (browser UI only; API open) |
+| `MPDBACKEND_WEB_PASSWORD` | Password for MPD control in the web player (`/?password=…`); without password: stream + channels only |
 | `MPDBACKEND_MARKED_FOR_DELETE` | Target file for mark-for-delete (default: `data/mark_for_delete.cfg`) |
 
 See `server/systemd/mpdbackend.env.example` for the full list.
@@ -258,7 +258,7 @@ See `server/systemd/mpdbackend.env.example` for the full list.
 
 At **`http://host:4533/`** mpdbackend serves a responsive web UI — layout and typography adapt to the caller’s viewport (`clamp`, `vmin`, `dvh`; portrait, landscape, various screen sizes):
 
-**Protection:** set `MPDBACKEND_WEB_PASSWORD` → open the web player with the password in the URL, e.g. `http://host:4533/?password=secret`. After the first visit the server sets a cookie (CSS/JS load without the password in the URL). The HTTP API (`/nowplaying`, `/playlists`, `/cmd/*`, …) stays **open**.
+**Protection:** set `MPDBACKEND_WEB_PASSWORD` → without `?password=…` in the URL: **channel picker + stream only** (no MPD control). With `http://host:4533/?password=secret` in the URL: **full access**. **No cookie** — the password must stay in the URL (bookmark with password). `POST /cmd/*` and `GET /playlists` check `?password=`; stream/`/channels`/`/nowplaying` work without it.
 
 - **Display:** cover, title, artist, album, progress (elapsed/duration), track position in playlist
 - **Channel:** picker from `channels.json` (logo + `stream_url`)
@@ -286,7 +286,8 @@ An external job can read this file and process the entry (delete, move, enqueue,
 
 | Endpoint | Description |
 |----------|-------------|
-| `GET /` | Web player (static files; use `/?password=…` when set) |
+| `GET /` | Web player (guest always; full control with `/?password=…` when set) |
+| `GET /web/session` | `{ auth_required, control_granted }` for guest vs. full access |
 | `GET /nowplaying` | Current MPD track metadata (JSON, see below) |
 | `GET /playlists` | Available MPD playlists and active playlist |
 | `GET /cover?name=cover_….jpg` | Cached cover image |

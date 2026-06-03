@@ -29,6 +29,8 @@ const els = {
   iconPlay: document.getElementById("icon-play"),
   iconPause: document.getElementById("icon-pause"),
   stream: document.getElementById("stream"),
+  controlPanel: document.getElementById("control-panel"),
+  accessHint: document.getElementById("access-hint"),
 };
 
 const state = {
@@ -44,6 +46,9 @@ const state = {
   currentFile: "",
   saveFileTimer: null,
   lastNowPlaying: null,
+  authRequired: false,
+  controlGranted: true,
+  playlistPollId: null,
 };
 
 const mediaSession = {
@@ -66,8 +71,23 @@ function stripM3u(name) {
   return String(name || "").replace(/\.m3u$/i, "");
 }
 
+function passwordFromUrl() {
+  return new URLSearchParams(window.location.search).get("password") || "";
+}
+
+/** Hängt ?password= aus der Seiten-URL an API-Pfade (für MPD-Steuerung). */
+function apiPath(path) {
+  const pwd = passwordFromUrl();
+  if (!pwd) {
+    return `${API}${path}`;
+  }
+  const url = new URL(path, window.location.href);
+  url.searchParams.set("password", pwd);
+  return `${API}${url.pathname}${url.search}`;
+}
+
 async function fetchJson(path) {
-  const response = await fetch(`${API}${path}`, { cache: "no-store" });
+  const response = await fetch(apiPath(path), { cache: "no-store" });
   if (!response.ok) {
     throw new Error(`${path} failed: ${response.status}`);
   }
@@ -75,7 +95,11 @@ async function fetchJson(path) {
 }
 
 async function postText(path, body) {
-  const response = await fetch(`${API}${path}`, {
+  if (path.startsWith("/cmd/") && state.authRequired && !state.controlGranted) {
+    throw new Error("control requires password");
+  }
+
+  const response = await fetch(apiPath(path), {
     method: "POST",
     headers: { "Content-Type": "text/plain; charset=utf-8" },
     body,
@@ -85,6 +109,21 @@ async function postText(path, body) {
     throw new Error(data.error || `${path} failed: ${response.status}`);
   }
   return response.json();
+}
+
+function applyControlAccess() {
+  const guest = state.authRequired && !state.controlGranted;
+  document.body.classList.toggle("mode-guest", guest);
+  if (els.accessHint) {
+    els.accessHint.classList.toggle("hidden", !guest);
+  }
+}
+
+async function loadWebSession() {
+  const session = await fetchJson("/web/session");
+  state.authRequired = Boolean(session.auth_required);
+  state.controlGranted = Boolean(session.control_granted);
+  applyControlAccess();
 }
 
 function setHealth(ok) {
@@ -217,10 +256,16 @@ function initMediaSession() {
   });
 
   navigator.mediaSession.setActionHandler("previoustrack", () => {
+    if (!state.controlGranted) {
+      return;
+    }
     postText("/cmd/player", "back").catch(console.warn);
   });
 
   navigator.mediaSession.setActionHandler("nexttrack", () => {
+    if (!state.controlGranted) {
+      return;
+    }
     postText("/cmd/player", "next").catch(console.warn);
   });
 
@@ -553,18 +598,37 @@ els.stream.addEventListener("play", () => {
 
 initMediaSession();
 
-Promise.all([loadChannels(), loadPlaylists()])
-  .then(() => {
-    pollNowPlaying();
-    pollHealth();
-  })
-  .catch((err) => {
-    console.error(err);
-    setHealth(false);
-  });
+async function bootstrap() {
+  try {
+    await loadWebSession();
+  } catch (err) {
+    console.warn(err);
+    state.authRequired = false;
+    state.controlGranted = true;
+    applyControlAccess();
+  }
+
+  await loadChannels();
+
+  if (state.controlGranted) {
+    try {
+      await loadPlaylists();
+    } catch (err) {
+      console.warn(err);
+    }
+    state.playlistPollId = setInterval(() => {
+      loadPlaylists().catch(console.warn);
+    }, 30000);
+  }
+
+  pollNowPlaying();
+  pollHealth();
+}
+
+bootstrap().catch((err) => {
+  console.error(err);
+  setHealth(false);
+});
 
 setInterval(pollNowPlaying, 1000);
 setInterval(pollHealth, 15000);
-setInterval(() => {
-  loadPlaylists().catch(console.warn);
-}, 30000);

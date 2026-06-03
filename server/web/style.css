@@ -459,6 +459,14 @@ body {
   display: none !important;
 }
 
+body.mode-guest #control-panel {
+  display: none;
+}
+
+.access-hint code {
+  font-size: 0.95em;
+}
+
 .sr-only {
   position: absolute;
   width: 1px;
