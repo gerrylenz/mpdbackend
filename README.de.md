@@ -244,7 +244,7 @@ Häufige Optionen:
 | `MPDBACKEND_COVER_DIR` | Cover-Cache (JPEG) |
 | `MPDBACKEND_STATION_LOGO_DIR` | Senderlogos |
 | `MPDBACKEND_CHANNELS_FILE` | Pfad zur `channels.json` |
-| `MPDBACKEND_PUBLIC_BASE_URL` | Öffentliche URL dieses Backends |
+| `MPDBACKEND_PUBLIC_BASE_URL` | Öffentliche HTTPS-URL (Cover für Media Session/CarPlay; in `/nowplaying` als `media_image_url`) |
 | `MPDBACKEND_HTTP_PORT` | HTTP-Port (Standard: `4533`) |
 | `MPDBACKEND_WEB_DIR` | Pfad zum Web-Player (Standard: `server/web/`) |
 | `MPDBACKEND_WEB_PASSWORD` | Passwort für Web-Player-Seite: Aufruf mit `/?password=…` (nur Browser-UI; API offen) |
@@ -263,9 +263,12 @@ Unter **`http://host:4533/`** liefert mpdbackend eine responsive Web-Oberfläche
 - **Playlist:** aktive Playlist und Auswahl aller MPD-Playlists
 - **Steuerung:** Play/Stop, Next/Back, Lautstärke (über HTTP → MPD)
 - **Stream:** Audio über `stream_url` aus `channels.json` (getrennt von Metadaten)
+- **CarPlay / Sperrbildschirm:** mit laufendem Stream setzt der Web-Player die **Media Session API** (Titel, Künstler, Cover, Fortschritt; Steuerung Next/Back/Pause für den Stream)
 - **Markieren:** rotes Kreuz → `POST /cmd/savefile` → hängt MPD-Dateipfad an `MPDBACKEND_MARKED_FOR_DELETE` an
 
 Audio kommt vom **HTTP-Stream** (MPD `httpd`/Icecast), Steuerung und Metadaten vom **mpdbackend-Port 4533**.
+
+**CarPlay (Safari auf dem iPhone):** Web-Player öffnen → **Stream starten** (iOS meldet nur aktive `<audio>`-Wiedergabe). `MPDBACKEND_PUBLIC_BASE_URL` auf die vom iPhone erreichbare **HTTPS-URL** setzen (z. B. `https://nas.local:4533`), damit iOS das Cover laden kann; ohne Base-URL nutzt der Browser die aktuelle Seiten-URL für `/cover`.
 
 ### Mark for delete
 
@@ -306,6 +309,7 @@ Ein externer Job kann diese Datei auslesen und den Eintrag verarbeiten (z. B. 
   "duration": 245.0,
   "elapsed": 83.5,
   "cover_name": "cover_a1b2c3.jpg",
+  "media_image_url": "https://host.example.com:4533/cover?name=cover_a1b2c3.jpg",
   "volume": 45,
   "playlist": "Pop.m3u",
   "pos": 3,

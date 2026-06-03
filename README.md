@@ -246,7 +246,7 @@ Common options:
 | `MPDBACKEND_COVER_DIR` | Cached cover JPEGs |
 | `MPDBACKEND_STATION_LOGO_DIR` | Station logo files |
 | `MPDBACKEND_CHANNELS_FILE` | Path to `channels.json` |
-| `MPDBACKEND_PUBLIC_BASE_URL` | Public URL of this backend |
+| `MPDBACKEND_PUBLIC_BASE_URL` | Public HTTPS URL (cover for Media Session/CarPlay; exposed in `/nowplaying` as `media_image_url`) |
 | `MPDBACKEND_HTTP_PORT` | HTTP port (default: `4533`) |
 | `MPDBACKEND_WEB_DIR` | Web player files (default: `server/web/`) |
 | `MPDBACKEND_WEB_PASSWORD` | Web player password: open with `/?password=…` (browser UI only; API open) |
@@ -265,9 +265,12 @@ At **`http://host:4533/`** mpdbackend serves a responsive web UI — layout and 
 - **Playlist:** active playlist and picker for all MPD playlists
 - **Control:** play/stop, next/back, volume (HTTP → MPD)
 - **Stream:** audio via `stream_url` from `channels.json` (separate from metadata)
+- **CarPlay / lock screen:** with the stream running, the web player uses the **Media Session API** (title, artist, cover, progress; next/back/pause control the stream)
 - **Mark for delete:** red cross → `POST /cmd/savefile` → **appends** MPD file path to `MPDBACKEND_MARKED_FOR_DELETE`
 
 Audio comes from the **HTTP stream** (MPD `httpd`/Icecast); control and metadata from **mpdbackend port 4533**.
+
+**CarPlay (Safari on iPhone):** open the web player → **start stream** (iOS only reports active `<audio>` playback). Set `MPDBACKEND_PUBLIC_BASE_URL` to an **HTTPS URL** reachable from the phone so iOS can load cover art; without it, the browser uses the current page origin for `/cover`.
 
 ### Mark for delete
 
@@ -308,6 +311,7 @@ An external job can read this file and process the entry (delete, move, enqueue,
   "duration": 245.0,
   "elapsed": 83.5,
   "cover_name": "cover_a1b2c3.jpg",
+  "media_image_url": "https://host.example.com:4533/cover?name=cover_a1b2c3.jpg",
   "volume": 45,
   "playlist": "Pop.m3u",
   "pos": 3,

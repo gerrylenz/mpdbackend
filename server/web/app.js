@@ -43,6 +43,12 @@ const state = {
   playlistChanging: false,
   currentFile: "",
   saveFileTimer: null,
+  lastNowPlaying: null,
+};
+
+const mediaSession = {
+  supported: typeof navigator !== "undefined" && "mediaSession" in navigator,
+  lastMetadataKey: "",
 };
 
 function formatTime(seconds) {
@@ -85,6 +91,147 @@ function setHealth(ok) {
   els.healthDot.classList.toggle("ok", ok);
   els.healthDot.classList.toggle("bad", !ok);
   els.healthDot.title = ok ? "Verbunden" : "Verbindungsproblem";
+}
+
+function resolveArtworkUrl(data) {
+  const fromApi = String(data.media_image_url || "").trim();
+  if (fromApi.startsWith("http://") || fromApi.startsWith("https://")) {
+    return fromApi;
+  }
+
+  const coverName = String(data.cover_name || "").trim();
+  if (!coverName) {
+    return null;
+  }
+
+  return new URL(
+    `${API}/cover?name=${encodeURIComponent(coverName)}`,
+    window.location.href,
+  ).href;
+}
+
+function mediaMetadataKey(data) {
+  return [
+    data.title,
+    data.artist,
+    data.album,
+    data.cover_name,
+    data.media_image_url,
+  ].join("\0");
+}
+
+function mediaSessionPlaybackState() {
+  if (!state.streamPlaying) {
+    return "none";
+  }
+  if (state.playbackState === "pause") {
+    return "paused";
+  }
+  return "playing";
+}
+
+function clearMediaSession() {
+  if (!mediaSession.supported) {
+    return;
+  }
+  navigator.mediaSession.playbackState = "none";
+  mediaSession.lastMetadataKey = "";
+}
+
+function syncMediaSession(data) {
+  if (!mediaSession.supported) {
+    return;
+  }
+
+  if (!state.streamPlaying) {
+    clearMediaSession();
+    return;
+  }
+
+  const title = String(data.title || "").trim() || "MPD Player";
+  const artist = String(data.artist || "").trim();
+  const album = String(data.album || "").trim();
+  const artworkUrl = resolveArtworkUrl(data);
+  const metadataKey = mediaMetadataKey(data);
+
+  if (metadataKey !== mediaSession.lastMetadataKey) {
+    mediaSession.lastMetadataKey = metadataKey;
+    const artwork = artworkUrl
+      ? [
+          { src: artworkUrl, sizes: "512x512", type: "image/jpeg" },
+          { src: artworkUrl, sizes: "256x256", type: "image/jpeg" },
+        ]
+      : [];
+
+    try {
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title,
+        artist,
+        album,
+        artwork,
+      });
+    } catch (err) {
+      console.warn("mediaSession.metadata failed", err);
+    }
+  }
+
+  navigator.mediaSession.playbackState = mediaSessionPlaybackState();
+
+  if ("setPositionState" in navigator.mediaSession) {
+    const duration = Number(data.duration) || 0;
+    const position = Number(data.elapsed) || 0;
+    if (duration > 0) {
+      try {
+        navigator.mediaSession.setPositionState({
+          duration,
+          playbackRate: state.playbackState === "play" ? 1 : 0,
+          position: Math.min(Math.max(0, position), duration),
+        });
+      } catch (_err) {
+        // ignored when position state is invalid
+      }
+    }
+  }
+}
+
+function initMediaSession() {
+  if (!mediaSession.supported) {
+    return;
+  }
+
+  navigator.mediaSession.setActionHandler("play", async () => {
+    if (!els.stream.src) {
+      return;
+    }
+    try {
+      await els.stream.play();
+      setStreamUi(true);
+    } catch (err) {
+      console.warn(err);
+    }
+  });
+
+  navigator.mediaSession.setActionHandler("pause", () => {
+    els.stream.pause();
+    setStreamUi(false);
+  });
+
+  navigator.mediaSession.setActionHandler("previoustrack", () => {
+    postText("/cmd/player", "back").catch(console.warn);
+  });
+
+  navigator.mediaSession.setActionHandler("nexttrack", () => {
+    postText("/cmd/player", "next").catch(console.warn);
+  });
+
+  try {
+    navigator.mediaSession.setActionHandler("stop", () => {
+      els.stream.pause();
+      setStreamUi(false);
+    });
+  } catch (_err) {
+    // optional in some browsers
+  }
 }
 
 function setPlaybackUi(playbackState) {
@@ -206,6 +353,9 @@ function updateNowPlaying(data) {
     els.volume.value = String(data.volume);
     els.volumeLabel.textContent = String(data.volume);
   }
+
+  state.lastNowPlaying = data;
+  syncMediaSession(data);
 }
 
 function updateChannelUi(channelId) {
@@ -235,6 +385,12 @@ function setStreamUi(playing) {
   state.streamPlaying = playing;
   els.btnStream.classList.toggle("active", playing);
   els.streamLabel.textContent = playing ? "Stream läuft" : "Stream starten";
+
+  if (!playing) {
+    clearMediaSession();
+  } else if (state.lastNowPlaying) {
+    syncMediaSession(state.lastNowPlaying);
+  }
 }
 
 async function loadChannels() {
@@ -394,6 +550,8 @@ els.stream.addEventListener("pause", () => {
 els.stream.addEventListener("play", () => {
   setStreamUi(true);
 });
+
+initMediaSession();
 
 Promise.all([loadChannels(), loadPlaylists()])
   .then(() => {

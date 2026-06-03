@@ -306,7 +306,11 @@ class HTTPAPI:
 
     def handle_nowplaying(self, req):
         """GET /nowplaying – aktuelle Track-Metadaten als JSON."""
-        from mpdbackend import parse_status_volume, resolve_active_playlist_name
+        from mpdbackend import (
+            parse_status_volume,
+            public_cover_url,
+            resolve_active_playlist_name,
+        )
 
         song = self.worker.last_song or {}
         status = self.worker.last_status or {}
@@ -325,7 +329,7 @@ class HTTPAPI:
             "duration": self.worker.resolve_duration(song, status),
             "elapsed": float(elapsed_status.get("elapsed") or 0),
             "cover_name": self.worker.cover.cover_name(),
-            "media_image_url": self.worker.cover.cover_name(),
+            "media_image_url": public_cover_url(self.worker.cover.cover_name()),
             "playlist": active_playlist,
             "file": song.get("file") or "",
         }

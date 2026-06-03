@@ -8,10 +8,11 @@ import logging
 import threading
 import os
 import hashlib
+from urllib.parse import quote
 
 from mpd import MPDClient
 
-from mpdbackend_cover import CoverService
+from mpdbackend_cover import COVER_NAME_RE, CoverService
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -256,6 +257,18 @@ def format_playback_time(seconds: float) -> str:
     if hours:
         return f"{hours}:{minutes:02d}:{secs:02d}"
     return f"{minutes}:{secs:02d}"
+
+
+def public_cover_url(cover_name: str) -> str | None:
+    """Öffentliche Cover-URL für Media Session / CarPlay (braucht MPDBACKEND_PUBLIC_BASE_URL)."""
+    name = (cover_name or "").strip()
+    if not name or not COVER_NAME_RE.match(name):
+        return None
+    path = f"/cover?name={quote(name)}"
+    base = (PUBLIC_BASE_URL or "").strip().rstrip("/")
+    if not base:
+        return None
+    return f"{base}{path}"
 
 
 def display_playlist_filename(name: str) -> str:
