@@ -130,7 +130,6 @@ mpdbackend/
 
 ```bash
 cd server
-chmod +x install/install.sh
 ./install/install.sh --systemd
 ```
 
