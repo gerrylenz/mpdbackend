@@ -148,7 +148,7 @@ install_systemd_unit() {
         sudo install -m 600 "${INSTALL_DIR}/mpdbackend.env" "${env_dst}"
         log "Created ${env_dst}"
     else
-        log "Keeping existing ${env_dst}"
+        log "Keeping existing ${env_dst} (edit MPDBACKEND_MQTT_* there for systemd)"
     fi
 
     sudo systemctl daemon-reload

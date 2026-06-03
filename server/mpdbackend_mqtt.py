@@ -16,7 +16,7 @@ from enum import StrEnum
 
 from paho.mqtt import client as mqtt_client
 
-from mpdbackend import format_playback_time
+from mpdbackend import env_bool, format_playback_time
 
 logger = logging.getLogger("mpdbackend.mqtt")
 
@@ -121,7 +121,9 @@ class ElapsedPublisherThread(threading.Thread):
 
 
 def validate_mqtt_config(env_path: str = DEFAULT_ENV_FILE) -> None:
-    """Beendet Start, wenn Pflicht-MQTT-Einstellungen fehlen."""
+    """Beendet Start, wenn Pflicht-MQTT-Einstellungen fehlen (nur bei aktiviertem MQTT)."""
+    if not env_bool("MPDBACKEND_MQTT_ENABLED", False):
+        return
     missing = [
         name
         for name, value in (

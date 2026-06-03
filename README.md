@@ -236,7 +236,7 @@ Common options:
 
 | Variable | Purpose |
 |----------|---------|
-| `MPDBACKEND_MQTT_ENABLED` | Enable MQTT publish and control (default: `true`) |
+| `MPDBACKEND_MQTT_ENABLED` | Enable MQTT publish and control (default: `false`) |
 | `MPDBACKEND_MQTT_TOPIC_*` | Topic names (see [MQTT](#mqtt) below) |
 | `MPDBACKEND_MQTT_ELAPSED_INTERVAL` | Elapsed publish interval in seconds (default: `1`) |
 | `MPDBACKEND_MPD_SOCKET` | MPD socket (default: `/run/mpd/socket`) |
