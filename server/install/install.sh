@@ -36,6 +36,7 @@ done
 
 INSTALL_DIR="${INSTALL_DIR:-${DEFAULT_INSTALL_DIR}}"
 mkdir -p "${INSTALL_DIR}"
+SOURCE_DIR="$(cd "${SOURCE_DIR}" && pwd)"
 INSTALL_DIR="$(cd "${INSTALL_DIR}" && pwd)"
 RUN_USER="$(id -un)"
 RUN_GROUP="$(id -gn)"
@@ -66,28 +67,36 @@ validate_source_dir() {
 }
 
 copy_server_files() {
-    log "Copy files to ${INSTALL_DIR}"
     mkdir -p "${INSTALL_DIR}/install" "${INSTALL_DIR}/systemd" "${INSTALL_DIR}/data/covers" "${INSTALL_DIR}/data/logos" "${INSTALL_DIR}/web"
 
-    install -m 644 "${SOURCE_DIR}/mpdbackend.py" "${INSTALL_DIR}/"
-    install -m 644 "${SOURCE_DIR}/mpdbackend_mqtt.py" "${INSTALL_DIR}/"
-    install -m 644 "${SOURCE_DIR}/mpdbackend_http.py" "${INSTALL_DIR}/"
-    install -m 644 "${SOURCE_DIR}/mpdbackend_cover.py" "${INSTALL_DIR}/"
-    install -m 644 "${SOURCE_DIR}/web/index.html" "${INSTALL_DIR}/web/"
-    install -m 644 "${SOURCE_DIR}/web/style.css" "${INSTALL_DIR}/web/"
-    install -m 644 "${SOURCE_DIR}/web/app.js" "${INSTALL_DIR}/web/"
-    install -m 644 "${SOURCE_DIR}/channels.json.example" "${INSTALL_DIR}/"
-    install -m 644 "${SOURCE_DIR}/channels.json.example.multi" "${INSTALL_DIR}/"
+    if [[ "${SOURCE_DIR}" == "${INSTALL_DIR}" ]]; then
+        log "In-place install in ${INSTALL_DIR} (skip self-copy)"
+        chmod 755 "${INSTALL_DIR}/install/install.sh"
+        if [[ -f "${INSTALL_DIR}/install/setup-venv.sh" ]]; then
+            chmod 755 "${INSTALL_DIR}/install/setup-venv.sh"
+        fi
+    else
+        log "Copy files to ${INSTALL_DIR}"
+        install -m 644 "${SOURCE_DIR}/mpdbackend.py" "${INSTALL_DIR}/"
+        install -m 644 "${SOURCE_DIR}/mpdbackend_mqtt.py" "${INSTALL_DIR}/"
+        install -m 644 "${SOURCE_DIR}/mpdbackend_http.py" "${INSTALL_DIR}/"
+        install -m 644 "${SOURCE_DIR}/mpdbackend_cover.py" "${INSTALL_DIR}/"
+        install -m 644 "${SOURCE_DIR}/web/index.html" "${INSTALL_DIR}/web/"
+        install -m 644 "${SOURCE_DIR}/web/style.css" "${INSTALL_DIR}/web/"
+        install -m 644 "${SOURCE_DIR}/web/app.js" "${INSTALL_DIR}/web/"
+        install -m 644 "${SOURCE_DIR}/channels.json.example" "${INSTALL_DIR}/"
+        install -m 644 "${SOURCE_DIR}/channels.json.example.multi" "${INSTALL_DIR}/"
 
-    install -m 755 "${SOURCE_DIR}/install/install.sh" "${INSTALL_DIR}/install/"
-    install -m 644 "${SOURCE_DIR}/install/requirements.txt" "${INSTALL_DIR}/install/"
+        install -m 755 "${SOURCE_DIR}/install/install.sh" "${INSTALL_DIR}/install/"
+        install -m 644 "${SOURCE_DIR}/install/requirements.txt" "${INSTALL_DIR}/install/"
 
-    if [[ -f "${SOURCE_DIR}/install/setup-venv.sh" ]]; then
-        install -m 755 "${SOURCE_DIR}/install/setup-venv.sh" "${INSTALL_DIR}/install/"
+        if [[ -f "${SOURCE_DIR}/install/setup-venv.sh" ]]; then
+            install -m 755 "${SOURCE_DIR}/install/setup-venv.sh" "${INSTALL_DIR}/install/"
+        fi
+
+        install -m 644 "${SOURCE_DIR}/systemd/mpdbackend.service" "${INSTALL_DIR}/systemd/"
+        install -m 644 "${SOURCE_DIR}/systemd/mpdbackend.env.example" "${INSTALL_DIR}/systemd/"
     fi
-
-    install -m 644 "${SOURCE_DIR}/systemd/mpdbackend.service" "${INSTALL_DIR}/systemd/"
-    install -m 644 "${SOURCE_DIR}/systemd/mpdbackend.env.example" "${INSTALL_DIR}/systemd/"
 
     if [[ ! -f "${INSTALL_DIR}/channels.json" ]]; then
         install -m 644 "${SOURCE_DIR}/channels.json.example" "${INSTALL_DIR}/channels.json"
