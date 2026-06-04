@@ -166,6 +166,20 @@ def save_current_track_file(song: dict, output_path: str | None = None) -> str:
     return track_file
 
 
+def load_marked_for_delete_entries(output_path: str | None = None) -> list[str]:
+    """Liest mark_for_delete.cfg: eine MPD-Dateipfad-Zeile pro Eintrag."""
+    target = (output_path or MARKED_FOR_DELETE).strip()
+    if not target:
+        return []
+
+    target_abs = os.path.abspath(target)
+    if not os.path.isfile(target_abs):
+        return []
+
+    with open(target_abs, encoding="utf-8") as handle:
+        return [line.strip() for line in handle if line.strip()]
+
+
 def channel_logo_basename(channel_id: str) -> str:
     """Liefert den Dateinamen-Basis für ein Senderlogo."""
     return f"channel_{channel_id}"
