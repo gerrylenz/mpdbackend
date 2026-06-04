@@ -12,7 +12,7 @@ MPD plays local files or playlists; an Icecast/HTTP stream broadcasts the audio.
 ```
                          ┌──────────────────────────────────────┐
                          │   Music Assistant (1× provider)      │
-                         │   channels from channels.json          │
+                         │   channels from channels.json        │
                          └─────────────────┬────────────────────┘
                                            │ /nowplaying, /cover …
               ┌────────────────────────────┼────────────────────────────┐

@@ -333,6 +333,10 @@ class HTTPAPI:
                     api.handle_cmd_savefile(self)
                     return
 
+                if path == "/markfordelete/clear":
+                    api.handle_markfordelete_clear(self)
+                    return
+
                 self.send_response(404)
                 self.end_headers()
 
@@ -495,6 +499,28 @@ class HTTPAPI:
             "files": load_marked_for_delete_entries(),
         }
         self._send_json(req, 200, payload)
+
+    def handle_markfordelete_clear(self, req) -> None:
+        """POST /markfordelete/clear – mark_for_delete.cfg auf diesem Server leeren."""
+        from mpdbackend import clear_marked_for_delete_file
+
+        channel_id = self._channel_id_from_request(req)
+        backend = self._channel_backend_url(channel_id)
+        if backend and self._proxy_needed(backend, req):
+            self._try_proxy_cmd_post(req, "/markfordelete/clear")
+            return
+
+        try:
+            path = clear_marked_for_delete_file()
+        except ValueError as err:
+            self._send_json(req, 503, {"ok": False, "error": str(err)})
+            return
+        except OSError as err:
+            logger.warning("Failed to clear mark_for_delete file: %s", err)
+            self._send_json(req, 503, {"ok": False, "error": "clear failed"})
+            return
+
+        self._send_json(req, 200, {"ok": True, "path": path})
 
     def handle_channels(self, req):
         """GET /channels – Senderliste aus channels.json."""

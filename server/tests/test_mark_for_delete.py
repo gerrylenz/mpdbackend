@@ -12,3 +12,14 @@ def test_load_marked_for_delete_entries(tmp_path):
 
 def test_load_marked_for_delete_missing_file(tmp_path):
     assert backend.load_marked_for_delete_entries(str(tmp_path / "missing.cfg")) == []
+
+
+def test_clear_marked_for_delete_file(tmp_path):
+    cfg = tmp_path / "mark_for_delete.cfg"
+    cfg.write_text("a.flac\nb.flac\n", encoding="utf-8")
+
+    path = backend.clear_marked_for_delete_file(str(cfg))
+
+    assert path == str(cfg.resolve())
+    assert cfg.read_text(encoding="utf-8") == ""
+    assert backend.load_marked_for_delete_entries(str(cfg)) == []

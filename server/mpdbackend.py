@@ -8,6 +8,7 @@ import logging
 import threading
 import os
 import hashlib
+from pathlib import Path
 from urllib.parse import quote
 
 from mpd import MPDClient
@@ -178,6 +179,20 @@ def load_marked_for_delete_entries(output_path: str | None = None) -> list[str]:
 
     with open(target_abs, encoding="utf-8") as handle:
         return [line.strip() for line in handle if line.strip()]
+
+
+def clear_marked_for_delete_file(output_path: str | None = None) -> str:
+    """Leert mark_for_delete.cfg; liefert den absoluten Pfad."""
+    target = (output_path or MARKED_FOR_DELETE).strip()
+    if not target:
+        raise ValueError("output path not configured")
+
+    target_abs = os.path.abspath(target)
+    parent = os.path.dirname(target_abs)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    Path(target_abs).write_text("", encoding="utf-8")
+    return target_abs
 
 
 def channel_logo_basename(channel_id: str) -> str:

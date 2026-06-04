@@ -125,18 +125,33 @@ def delete_marked(
     return deleted, skipped, errors
 
 
-def clear_local_mark_file(cfg_path: str, dry_run: bool) -> None:
-    """Leert die lokale mark_for_delete.cfg (optional, nur wenn Datei existiert)."""
-    path = Path(cfg_path).resolve()
-    log(f"Markierdatei leeren: {path}")
-    if not path.is_file():
-        log("Übersprungen: Datei existiert nicht")
-        return
+def clear_marked_files_on_server(
+    base_url: str, channel: str = "", *, dry_run: bool
+) -> None:
+    """Leert mark_for_delete.cfg auf dem mpdbackend-Server."""
     if dry_run:
-        log("[dry-run] würde Datei leeren")
+        log("[dry-run] würde Markierliste auf dem Server leeren (POST /markfordelete/clear)")
         return
-    path.write_text("", encoding="utf-8")
-    log("Markierdatei geleert")
+
+    params = {}
+    if channel.strip():
+        params["channel"] = channel.strip()
+    query = f"?{urlencode(params)}" if params else ""
+    url = f"{base_url.rstrip('/')}/markfordelete/clear{query}"
+    log(f"Leere Markierliste auf dem Server: {url}")
+    request = Request(
+        url,
+        data=b"",
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+    with urlopen(request, timeout=30) as response:
+        log(f"Server-Antwort: HTTP {response.status}")
+        raw = response.read()
+    data = json.loads(raw.decode("utf-8"))
+    if not data.get("ok"):
+        raise ValueError(data.get("error") or "clear failed")
+    log(f"Markierdatei geleert: {data.get('path', '')}")
 
 
 def parse_args() -> argparse.Namespace:
@@ -162,12 +177,6 @@ def parse_args() -> argparse.Namespace:
         "--dry-run",
         action="store_true",
         help="only print what would be deleted",
-    )
-    parser.add_argument(
-        "--clear-cfg",
-        metavar="PATH",
-        default="",
-        help="after success, truncate this local mark_for_delete.cfg",
     )
     return parser.parse_args()
 
@@ -200,7 +209,16 @@ def main() -> int:
     log(f"Server-Datei (Referenz): {payload.get('path', '')}")
 
     if not rel_paths:
-        log("Keine Einträge – nichts zu tun")
+        log("Keine Einträge zum Löschen")
+        log("--- Markierdatei auf dem Server leeren ---")
+        try:
+            clear_marked_files_on_server(
+                args.url, args.channel, dry_run=args.dry_run
+            )
+        except (HTTPError, URLError, TimeoutError, OSError, ValueError) as err:
+            log(f"FEHLER beim Leeren der Markierdatei: {err}")
+            return 1
+        log("Fertig")
         return 0
 
     log("--- Verarbeitung starten ---")
@@ -218,9 +236,14 @@ def main() -> int:
         log("Programm beendet mit Fehlern")
         return 1
 
-    if args.clear_cfg:
-        log("--- Markierdatei leeren ---")
-        clear_local_mark_file(args.clear_cfg, dry_run=args.dry_run)
+    log("--- Markierdatei auf dem Server leeren ---")
+    try:
+        clear_marked_files_on_server(
+            args.url, args.channel, dry_run=args.dry_run
+        )
+    except (HTTPError, URLError, TimeoutError, OSError, ValueError) as err:
+        log(f"FEHLER beim Leeren der Markierdatei: {err}")
+        return 1
 
     log("Fertig")
     return 0
