@@ -40,6 +40,8 @@ const state = {
   lastCoverName: "",
   playbackState: "stop",
   streamPlaying: false,
+  streamWanted: false,
+  streamReconnecting: false,
   volumeDragging: false,
   playlistChanging: false,
   currentFile: "",
@@ -108,7 +110,11 @@ async function postText(path, body) {
     throw new Error("control requires password");
   }
 
-  const response = await fetch(apiPath(path), {
+  const requestPath = path.startsWith("/cmd/")
+    ? withChannelQuery(path, state.activeChannel)
+    : path;
+
+  const response = await fetch(apiPath(requestPath), {
     method: "POST",
     headers: { "Content-Type": "text/plain; charset=utf-8" },
     body,
@@ -246,20 +252,11 @@ function initMediaSession() {
   }
 
   navigator.mediaSession.setActionHandler("play", async () => {
-    if (!els.stream.src) {
-      return;
-    }
-    try {
-      await els.stream.play();
-      setStreamUi(true);
-    } catch (err) {
-      console.warn(err);
-    }
+    await startBrowserStream();
   });
 
   navigator.mediaSession.setActionHandler("pause", () => {
-    els.stream.pause();
-    setStreamUi(false);
+    pauseBrowserStream();
   });
 
   navigator.mediaSession.setActionHandler("previoustrack", () => {
@@ -283,6 +280,85 @@ function initMediaSession() {
     });
   } catch (_err) {
     // optional in some browsers
+  }
+}
+
+function activeStreamUrl() {
+  const channel = state.channels[state.activeChannel];
+  return String(channel?.stream_url || els.stream.src || "").trim();
+}
+
+function reloadStreamElement() {
+  const base = activeStreamUrl();
+  if (!base) {
+    return false;
+  }
+  const url = new URL(base, window.location.href);
+  url.searchParams.set("t", String(Date.now()));
+  els.stream.pause();
+  els.stream.src = url.href;
+  els.stream.load();
+  return true;
+}
+
+function pauseBrowserStream({ clearWanted = true } = {}) {
+  if (clearWanted) {
+    state.streamWanted = false;
+  }
+  if (!els.stream.paused) {
+    els.stream.pause();
+  }
+  if (state.streamPlaying) {
+    setStreamUi(false);
+  }
+}
+
+async function reconnectBrowserStream({ retries = 5, delayMs = 450 } = {}) {
+  if (!state.streamWanted || !reloadStreamElement()) {
+    return false;
+  }
+
+  state.streamReconnecting = true;
+  try {
+    for (let attempt = 0; attempt < retries; attempt += 1) {
+      if (attempt > 0) {
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        reloadStreamElement();
+      }
+      try {
+        await els.stream.play();
+        setStreamUi(true);
+        return true;
+      } catch (err) {
+        console.warn("stream reconnect attempt failed", attempt + 1, err);
+      }
+    }
+    setStreamUi(false);
+    return false;
+  } finally {
+    state.streamReconnecting = false;
+  }
+}
+
+async function startBrowserStream({ forceReload = false } = {}) {
+  state.streamWanted = true;
+  if (!activeStreamUrl()) {
+    state.streamWanted = false;
+    return;
+  }
+  if (forceReload) {
+    await reconnectBrowserStream();
+    return;
+  }
+  if (!els.stream.src) {
+    reloadStreamElement();
+  }
+  try {
+    await els.stream.play();
+    setStreamUi(true);
+  } catch (err) {
+    console.warn(err);
+    await reconnectBrowserStream();
   }
 }
 
@@ -495,17 +571,19 @@ async function pollHealth() {
   }
 }
 
-els.channelSelect.addEventListener("change", () => {
-  if (state.streamPlaying) {
-    els.stream.pause();
-    setStreamUi(false);
-  }
+els.channelSelect.addEventListener("change", async () => {
+  const keepStream = state.streamWanted;
+  pauseBrowserStream({ clearWanted: false });
   state.lastCoverName = "";
   state.lastNowPlaying = null;
   updateChannelUi(els.channelSelect.value);
   pollNowPlaying().catch(console.warn);
   if (state.controlGranted) {
-    loadPlaylists().catch(console.warn);
+    await loadPlaylists().catch(console.warn);
+  }
+  if (keepStream) {
+    state.streamWanted = true;
+    await reconnectBrowserStream();
   }
 });
 
@@ -515,10 +593,17 @@ els.playlistSelect.addEventListener("change", async () => {
     return;
   }
 
+  const keepStream = state.streamWanted || state.streamPlaying;
+  if (keepStream) {
+    state.streamWanted = true;
+  }
   state.playlistChanging = true;
   try {
     await postText("/cmd/playlist", name);
     state.activePlaylist = name;
+    if (keepStream) {
+      await reconnectBrowserStream({ retries: 8, delayMs: 500 });
+    }
   } catch (err) {
     console.warn(err);
     els.playlistSelect.value = state.activePlaylist || "";
@@ -561,12 +646,23 @@ els.btnSaveFile.addEventListener("click", async () => {
 });
 
 els.btnStop.addEventListener("click", () => {
+  pauseBrowserStream();
   postText("/cmd/player", "stop").catch(console.warn);
 });
 
-els.btnPlay.addEventListener("click", () => {
+els.btnPlay.addEventListener("click", async () => {
   const command = state.playbackState === "play" ? "stop" : "play";
-  postText("/cmd/player", command).catch(console.warn);
+  if (command === "stop") {
+    pauseBrowserStream();
+  }
+  try {
+    await postText("/cmd/player", command);
+    if (command === "play") {
+      await startBrowserStream();
+    }
+  } catch (err) {
+    console.warn(err);
+  }
 });
 
 els.volume.addEventListener("pointerdown", () => {
@@ -591,24 +687,21 @@ els.btnStream.addEventListener("click", async () => {
     return;
   }
 
-  if (state.streamPlaying) {
-    els.stream.pause();
-    setStreamUi(false);
+  if (state.streamPlaying || state.streamWanted) {
+    pauseBrowserStream();
     return;
   }
 
-  try {
-    await els.stream.play();
-    setStreamUi(true);
-  } catch (err) {
-    console.warn(err);
-    setStreamUi(false);
-  }
+  await startBrowserStream();
 });
 
 els.stream.addEventListener("pause", () => {
-  if (!els.stream.ended) {
-    setStreamUi(false);
+  if (els.stream.ended || state.streamReconnecting || state.playlistChanging) {
+    return;
+  }
+  setStreamUi(false);
+  if (state.streamWanted) {
+    reconnectBrowserStream().catch(console.warn);
   }
 });
 

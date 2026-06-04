@@ -65,3 +65,11 @@ def test_append_auth_to_path_without_password():
     req.path = "/playlists?channel=1"
 
     assert api._append_auth_to_path(req, "/playlists") == "/playlists"
+
+
+def test_channel_id_from_request():
+    api = _api({})
+    req = MagicMock()
+    req.path = "/cmd/playlist?channel=2&password=secret"
+
+    assert api._channel_id_from_request(req) == "2"

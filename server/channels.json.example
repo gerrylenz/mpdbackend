@@ -1,9 +1,0 @@
-{
-  "0": {
-    "name": "Store Radio",
-    "description": "Ein MPD, ein Sender — Standard-Setup",
-    "stream_url": "http://192.168.1.10:8000/",
-    "content_type": "mp3",
-    "backend_url": "http://192.168.1.10:4533"
-  }
-}

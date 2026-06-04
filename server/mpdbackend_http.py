@@ -173,6 +173,47 @@ class HTTPAPI:
         except HTTPError as err:
             return err.code, err.read()
 
+    def _channel_id_from_request(self, req) -> str:
+        """Kanal-ID aus ?channel= (Web-Player / Multi-MPD-Routing)."""
+        query = dict(parse_qsl(urlparse(req.path).query))
+        return query.get("channel", "").strip()
+
+    def _try_proxy_cmd_post(self, req, cmd_path: str) -> bool:
+        """POST /cmd/… an backend_url des Kanals weiterleiten; True wenn proxied."""
+        channel_id = self._channel_id_from_request(req)
+        backend = self._channel_backend_url(channel_id)
+        if not backend or not self._proxy_needed(backend, req):
+            return False
+
+        body = self._read_body(req)
+        proxy_path = self._append_auth_to_path(req, cmd_path)
+        url = f"{backend.rstrip('/')}{proxy_path}"
+        try:
+            request = Request(
+                url,
+                data=body,
+                method="POST",
+                headers={"Content-Type": "text/plain; charset=utf-8"},
+            )
+            with urlopen(request, timeout=10) as resp:
+                status = resp.status
+                response_body = resp.read()
+        except HTTPError as err:
+            status = err.code
+            response_body = err.read()
+        except (URLError, TimeoutError, OSError) as err:
+            logger.warning("Backend proxy POST %s failed: %s", url, err)
+            self._send_json(req, 502, {"ok": False, "error": "backend unreachable"})
+            return True
+
+        req.send_response(status)
+        req.send_header("Content-Type", "application/json")
+        req.send_header("Cache-Control", "no-store")
+        req.send_header("Content-Length", str(len(response_body)))
+        req.end_headers()
+        req.wfile.write(response_body)
+        return True
+
     def _proxy_backend_get(self, req, backend_url: str, path: str, content_type: str) -> bool:
         """Leitet GET an backend_url weiter; True bei Erfolg."""
         path = self._append_auth_to_path(req, path)
@@ -258,6 +299,10 @@ class HTTPAPI:
 
                 if path == "/health":
                     api.handle_health(self)
+                    return
+
+                if path == "/markfordelete":
+                    api.handle_markfordelete(self)
                     return
 
                 self.send_response(404)
@@ -432,6 +477,25 @@ class HTTPAPI:
         req.end_headers()
         req.wfile.write(raw)
 
+    def handle_markfordelete(self, req):
+        """GET /markfordelete – Inhalt von mark_for_delete.cfg als JSON."""
+        from mpdbackend import MARKED_FOR_DELETE, load_marked_for_delete_entries
+
+        parsed = urlparse(req.path)
+        query = dict(parse_qsl(parsed.query))
+        channel_id = query.get("channel", "").strip()
+        backend = self._channel_backend_url(channel_id)
+        if backend and self._proxy_needed(backend, req):
+            proxy_path = "/markfordelete"
+            self._proxy_backend_get(req, backend, proxy_path, "application/json")
+            return
+
+        payload = {
+            "path": os.path.abspath(MARKED_FOR_DELETE),
+            "files": load_marked_for_delete_entries(),
+        }
+        self._send_json(req, 200, payload)
+
     def handle_channels(self, req):
         """GET /channels – Senderliste aus channels.json."""
         from mpdbackend import enrich_channels_payload
@@ -598,6 +662,9 @@ class HTTPAPI:
         """POST /cmd/player – play|stop|next|back (Plain-Text)."""
         from mpdbackend_mqtt import parse_mqtt_player_command
 
+        if self._try_proxy_cmd_post(req, "/cmd/player"):
+            return
+
         command = parse_mqtt_player_command(self._read_body(req))
         if command is None:
             self._send_json(req, 400, {"ok": False, "error": "invalid command"})
@@ -612,6 +679,9 @@ class HTTPAPI:
     def handle_cmd_volume(self, req) -> None:
         """POST /cmd/volume – Lautstärke 0–100 (Plain-Text)."""
         from mpdbackend_mqtt import parse_mqtt_volume_command
+
+        if self._try_proxy_cmd_post(req, "/cmd/volume"):
+            return
 
         volume = parse_mqtt_volume_command(self._read_body(req))
         if volume is None:
@@ -629,6 +699,9 @@ class HTTPAPI:
     def handle_cmd_playlist(self, req) -> None:
         """POST /cmd/playlist – Playlist laden und abspielen (Plain-Text)."""
         from mpdbackend_mqtt import parse_mqtt_playlist_name
+
+        if self._try_proxy_cmd_post(req, "/cmd/playlist"):
+            return
 
         playlist = parse_mqtt_playlist_name(self._read_body(req))
         if not playlist:
@@ -652,6 +725,9 @@ class HTTPAPI:
     def handle_cmd_savefile(self, req) -> None:
         """POST /cmd/savefile – aktuellen MPD-Dateipfad an Textdatei anhängen."""
         from mpdbackend import MARKED_FOR_DELETE, save_current_track_file
+
+        if self._try_proxy_cmd_post(req, "/cmd/savefile"):
+            return
 
         song = self.worker.last_song or {}
         try:
