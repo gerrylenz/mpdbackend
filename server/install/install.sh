@@ -54,7 +54,7 @@ require_command() {
 
 validate_source_dir() {
     local missing=0
-    for file in mpdbackend.py mpdbackend_mqtt.py mpdbackend_http.py mpdbackend_cover.py example/channels.json.example example/channels.json.example.multi systemd/mpdbackend.service systemd/mpdbackend.env.example install/install.sh install/requirements.txt web/index.html web/style.css web/app.js tools/delete_marked_files.py; do
+    for file in mpdbackend.py mpdbackend_mqtt.py mpdbackend_http.py mpdbackend_cover.py example/channels.json.example example/channels.json.example.multi systemd/mpdbackend.service systemd/mpdbackend.env.example install/install.sh install/requirements.txt web/index.html web/style.css web/app.js tools/delete_marked_files.py tools/delete_marked_files.env.example; do
         if [[ ! -f "${SOURCE_DIR}/${file}" ]]; then
             echo "Missing in source directory (${SOURCE_DIR}): ${file}" >&2
             missing=1
@@ -89,6 +89,7 @@ copy_server_files() {
 
         mkdir -p "${INSTALL_DIR}/tools"
         install -m 755 "${SOURCE_DIR}/tools/delete_marked_files.py" "${INSTALL_DIR}/tools/"
+        install -m 644 "${SOURCE_DIR}/tools/delete_marked_files.env.example" "${INSTALL_DIR}/tools/"
 
         install -m 755 "${SOURCE_DIR}/install/install.sh" "${INSTALL_DIR}/install/"
         install -m 644 "${SOURCE_DIR}/install/requirements.txt" "${INSTALL_DIR}/install/"
@@ -106,6 +107,17 @@ copy_server_files() {
         log "Created ${INSTALL_DIR}/channels.json from example"
     else
         log "Keeping existing ${INSTALL_DIR}/channels.json"
+    fi
+
+    if [[ ! -f "${INSTALL_DIR}/tools/delete_marked_files.env" ]]; then
+        sed \
+            -e "s|__INSTALL_DIR__|${INSTALL_DIR}|g" \
+            "${SOURCE_DIR}/tools/delete_marked_files.env.example" \
+            >"${INSTALL_DIR}/tools/delete_marked_files.env"
+        chmod 600 "${INSTALL_DIR}/tools/delete_marked_files.env"
+        log "Created ${INSTALL_DIR}/tools/delete_marked_files.env from example"
+    else
+        log "Keeping existing ${INSTALL_DIR}/tools/delete_marked_files.env"
     fi
 }
 
@@ -192,12 +204,8 @@ main() {
 Installation complete.
 
   Delete marked files (cron/timer example):
-    ${INSTALL_DIR}/venv/bin/python ${INSTALL_DIR}/tools/delete_marked_files.py \\
-      --url http://127.0.0.1:4533 \\
-      --music-root /home/musik \\
-      --cover-dir ${INSTALL_DIR}/data/covers \\
-      --mpd-update
-    # With MPDBACKEND_WEB_PASSWORD set, add: --password '…'
+    ${INSTALL_DIR}/venv/bin/python ${INSTALL_DIR}/tools/delete_marked_files.py
+    # Config: ${INSTALL_DIR}/tools/delete_marked_files.env
 
   Start manually:
     ${INSTALL_DIR}/venv/bin/python ${INSTALL_DIR}/mpdbackend.py

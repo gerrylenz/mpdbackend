@@ -7,6 +7,7 @@ server/channels.json
 server/mpdbackend.env
 server/mpdbackend_*.env
 !server/mpdbackend_*.env.example
+server/tools/delete_marked_files.env
 server/install/mpd.conf
 *:token
 github_token

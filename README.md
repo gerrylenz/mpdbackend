@@ -286,29 +286,27 @@ Duplicate consecutive entries for the same track are skipped automatically.
 
 **Cleanup tool** (`tools/delete_marked_files.py`, installed with `install.sh`):
 
+Configuration in `tools/delete_marked_files.env` (from `delete_marked_files.env.example`). CLI flags override the file. Alternatively: `--config /path/to/mpdbackend.env` (reads `MPDBACKEND_*` keys).
+
 ```bash
-python3 tools/delete_marked_files.py \
-  --url http://127.0.0.1:4533 \
-  --music-root /home/musik/alben \
-  --cover-dir /path/to/data/covers \
-  --mpd-update \
-  --password secret   # when MPDBACKEND_WEB_PASSWORD is set
+python3 tools/delete_marked_files.py
+python3 tools/delete_marked_files.py --dry-run
+python3 tools/delete_marked_files.py --config /etc/mpdbackend.env
 ```
 
 | Flag | Purpose |
 |------|---------|
-| `--dry-run` | Log only, no deletes |
-| `--cover-dir` | Remove cached cover JPEGs for deleted tracks |
-| `--mpd-update` | Run `mpc update` after successful deletes |
+| `--config` | Config file path (default: `delete_marked_files.env` beside script) |
+| `--dry-run` | Log only, no deletes (or config `DRY_RUN=true`) |
+| `--cover-dir` | Remove cached cover JPEGs (or config `COVER_DIR`) |
+| `--mpd-update` | Run `mpc update` after successful deletes (or config `MPD_UPDATE=true`) |
 | `--keep-list-on-error` | Do not clear the server list when errors occurred |
-| `--password` | `?password=` for protected `/markfordelete` endpoints |
+| `--password` | `?password=` override for protected `/markfordelete` endpoints |
 
 **Cron / systemd timer** (example, nightly at 03:00):
 
 ```cron
-0 3 * * * /opt/mpdbackend/venv/bin/python /opt/mpdbackend/tools/delete_marked_files.py \
-  --url http://127.0.0.1:4533 --music-root /home/musik/alben \
-  --cover-dir /opt/mpdbackend/data/covers --mpd-update >> /var/log/delete_marked_files.log 2>&1
+0 3 * * * /opt/mpdbackend/venv/bin/python /opt/mpdbackend/tools/delete_marked_files.py >> /var/log/delete_marked_files.log 2>&1
 ```
 
 ## HTTP API
