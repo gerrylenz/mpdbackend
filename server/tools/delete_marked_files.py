@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from datetime import datetime
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
@@ -28,7 +29,8 @@ DEFAULT_MPDBACKEND_MUSIC_ROOT = "/home/musik/alben"
 
 def log(message: str) -> None:
     """Ausgabe auf der Konsole (sofort sichtbar)."""
-    print(message, flush=True)
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"{ts} {message}", flush=True)
 
 
 def fetch_marked_files(base_url: str, channel: str = "") -> dict:
