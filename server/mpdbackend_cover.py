@@ -23,6 +23,14 @@ COVER_NAME_RE = re.compile(r"^cover_[0-9a-f]{16,64}\.jpg$")
 FOLDER_COVER_NAMES = ("cover.jpg", "folder.jpg", "Folder.jpg", "cover.png", "folder.png")
 
 
+def cover_cache_filename(audio_file: str) -> str:
+    """Stabiler Cover-Cache-Dateiname für eine existierende Audiodatei."""
+    stat = os.stat(audio_file)
+    key = f"{audio_file}:{stat.st_size}:{stat.st_mtime_ns}"
+    digest = hashlib.sha256(key.encode()).hexdigest()[:24]
+    return f"cover_{digest}.jpg"
+
+
 def cover_dir_from_env() -> str:
     """Cover-Cache-Verzeichnis (zur Laufzeit, nach load_env_file)."""
     return os.getenv(
@@ -132,10 +140,7 @@ class CoverService:
 
     def cache_name(self, audio_file: str) -> str:
         """Erzeugt stabilen Cache-Dateinamen aus Pfad und Datei-Metadaten."""
-        stat = os.stat(audio_file)
-        key = f"{audio_file}:{stat.st_size}:{stat.st_mtime_ns}"
-        digest = hashlib.sha256(key.encode()).hexdigest()[:24]
-        return f"cover_{digest}.jpg"
+        return cover_cache_filename(audio_file)
 
     def generate(self, audio_file: str) -> None:
         """Extrahiert Cover und schreibt es in den Cover-Cache."""

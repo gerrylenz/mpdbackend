@@ -1,0 +1,2 @@
+[music_assistant.providers]
+mpdbackend = mpdbackend:setup

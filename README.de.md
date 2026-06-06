@@ -77,7 +77,7 @@ Eine gemeinsame **`channels.json`** (z. B. auf dem Music-Assistant-Host) liste
 | **3× MPD, Music Assistant** | Eine **kanonische** `channels.json` (Vorlage: `channels.json.example.multi`) mit passender `backend_url` pro Kanal; MA-Default-Backend-URL zeigt auf **eine** Instanz, die `/channels` ausliefert |
 | **3× MPD, nur Web-Player** | Pro mpdbackend optional **nur der eigene** Kanal in `channels.json` — oder volle Liste nur für MA |
 
-Beispieldateien: `server/channels.json.example` (ein Sender), `server/channels.json.example.multi` (drei MPD auf einem Host).
+Beispieldateien: `server/example/channels.json.example` (ein Sender), `server/example/channels.json.example.multi` (drei MPD auf einem Host).
 
 - Live **Titel, Künstler, Album** von MPD (nicht nur ICY-Stream-Tags)
 - **Cover** aus eingebetteten Tags (ID3/APIC), ffmpeg-Video-Stream oder Ordnerbildern (`cover.jpg`)
@@ -100,8 +100,11 @@ mpdbackend/
 │   ├── mpdbackend_cover.py    # Cover-Extraktion und Cache
 │   ├── web/                   # Web-Player (HTML/CSS/JS)
 │   ├── home_assistant/        # Beispiele für MQTT-Integration (HA)
-│   ├── channels.json.example          # 1 MPD, 1 Kanal
-│   ├── channels.json.example.multi  # 3 MPD, Routing über backend_url
+│   ├── example/
+│   │   ├── channels.json.example          # 1 MPD, 1 Kanal
+│   │   └── channels.json.example.multi    # 3 MPD, Routing über backend_url
+│   ├── tools/
+│   │   └── delete_marked_files.py         # Cron-Job: markierte Titel löschen
 │   ├── install/
 │   │   ├── install.sh
 │   │   └── requirements.txt
@@ -255,7 +258,7 @@ Vollständige Liste: `server/systemd/mpdbackend.env.example`
 
 Unter **`http://host:4533/`** liefert mpdbackend eine responsive Web-Oberfläche — Layout und Schriftgrößen passen sich der Viewport-Größe des aufrufenden Geräts an (`clamp`, `vmin`, `dvh`; Portrait, Querformat, verschiedene Displaygrößen):
 
-**Absicherung:** `MPDBACKEND_WEB_PASSWORD` setzen → ohne `?password=…` in der URL: nur **Senderwahl + Stream** (keine MPD-Steuerung). Mit `http://host:4533/?password=geheim` in der URL: **voller Zugriff** (Playlists, Play/Stop, Lautstärke, …). Es gibt **kein Cookie** — das Passwort muss in der URL bleiben (Lesezeichen mit Passwort). `POST /cmd/*` und `GET /playlists` prüfen `?password=`; Stream/`/channels`/`/nowplaying` ohne Passwort.
+**Absicherung:** `MPDBACKEND_WEB_PASSWORD` setzen → ohne `?password=…` in der URL: nur **Senderwahl + Stream** (keine MPD-Steuerung). Mit `http://host:4533/?password=geheim` in der URL: **voller Zugriff** (Playlists, Play/Stop, Lautstärke, …). Es gibt **kein Cookie** — das Passwort muss in der URL bleiben (Lesezeichen mit Passwort). `POST /cmd/*`, `GET /playlists`, `GET /markfordelete` und `POST /markfordelete/clear` prüfen `?password=`; Stream/`/channels`/`/nowplaying` ohne Passwort.
 
 - **Anzeige:** Cover, Titel, Künstler, Album, Fortschritt (elapsed/duration), Track-Position in der Playlist
 - **Sender:** Kanalauswahl über `channels.json` (Logo + `stream_url`)
@@ -277,7 +280,34 @@ Audio kommt vom **HTTP-Stream** (MPD `httpd`/Icecast), Steuerung und Metadaten v
 Künstler/Album/Titel.mp3
 ```
 
-Ein externer Job kann diese Datei auslesen und den Eintrag verarbeiten (z. B. löschen, verschieben, in eine Queue schreiben).
+Aufeinanderfolgende Doppel-Einträge für denselben Titel werden automatisch übersprungen.
+
+**Lösch-Tool** (`tools/delete_marked_files.py`, wird mit `install.sh` mitinstalliert):
+
+```bash
+python3 tools/delete_marked_files.py \
+  --url http://127.0.0.1:4533 \
+  --music-root /home/musik/alben \
+  --cover-dir /pfad/zu/data/covers \
+  --mpd-update \
+  --password geheim   # wenn MPDBACKEND_WEB_PASSWORD gesetzt ist
+```
+
+| Flag | Zweck |
+|------|-------|
+| `--dry-run` | Nur anzeigen, nichts löschen |
+| `--cover-dir` | Gecachte Cover-JPEGs der gelöschten Titel entfernen |
+| `--mpd-update` | Nach erfolgreichem Löschen `mpc update` ausführen |
+| `--keep-list-on-error` | Markierliste bei Fehlern nicht leeren |
+| `--password` | `?password=` für geschützte `/markfordelete`-Endpunkte |
+
+**Cron / systemd-Timer** (Beispiel, täglich 03:00 Uhr):
+
+```cron
+0 3 * * * /opt/mpdbackend/venv/bin/python /opt/mpdbackend/tools/delete_marked_files.py \
+  --url http://127.0.0.1:4533 --music-root /home/musik/alben \
+  --cover-dir /opt/mpdbackend/data/covers --mpd-update >> /var/log/delete_marked_files.log 2>&1
+```
 
 ## HTTP-API
 
@@ -296,6 +326,8 @@ Ein externer Job kann diese Datei auslesen und den Eintrag verarbeiten (z. B. 
 | `POST /cmd/volume` | Lautstärke setzen: Plain-Text `0`–`100` |
 | `POST /cmd/playlist` | Playlist laden und abspielen: Plain-Text z. B. `Pop.m3u` |
 | `POST /cmd/savefile` | MPD-Dateipfad des aktuellen Titels an `MPDBACKEND_MARKED_FOR_DELETE` **anhängen** |
+| `GET /markfordelete` | Markierte Dateipfade als JSON (`files`-Array); optional `?channel=` |
+| `POST /markfordelete/clear` | `MPDBACKEND_MARKED_FOR_DELETE` auf diesem Server leeren |
 
 **Antwort von `/nowplaying`** (Beispiel):
 

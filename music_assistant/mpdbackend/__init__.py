@@ -45,6 +45,6 @@ async def get_config_entries(
             label="mpdbackend URL",
             description="Default metadata backend for all channels without their own backend_url.",
             required=True,
-            default_value="http://edeka.ex-store.de:4533",
+            default_value="http://127.0.0.1:4533",
         ),
     )

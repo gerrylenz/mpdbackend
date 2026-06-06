@@ -302,6 +302,9 @@ class HTTPAPI:
                     return
 
                 if path == "/markfordelete":
+                    if web_auth_enabled() and not web_control_granted(self):
+                        send_web_control_denied(self)
+                        return
                     api.handle_markfordelete(self)
                     return
 
@@ -312,7 +315,7 @@ class HTTPAPI:
                 """Steuerbefehle an MPD (Analog zu MQTT cmd-Topics)."""
                 path = urlparse(self.path).path
 
-                if path.startswith("/cmd/"):
+                if path.startswith("/cmd/") or path == "/markfordelete/clear":
                     if web_auth_enabled() and not web_control_granted(self):
                         send_web_control_denied(self)
                         return

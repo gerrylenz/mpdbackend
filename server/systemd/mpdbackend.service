@@ -5,11 +5,11 @@ Wants=mpd.service
 
 [Service]
 Type=simple
-User=gerry
-Group=gerry
-EnvironmentFile=-/home/gerry/projects/mpdbackend/server/mpdbackend.env
-WorkingDirectory=/home/gerry/projects/mpdbackend/server
-ExecStart=/home/gerry/projects/mpdbackend/server/venv/bin/python /home/gerry/projects/mpdbackend/server/mpdbackend.py
+User=mpdbackend
+Group=mpdbackend
+EnvironmentFile=-/etc/mpdbackend.env
+WorkingDirectory=__INSTALL_DIR__
+ExecStart=__INSTALL_DIR__/venv/bin/python __INSTALL_DIR__/mpdbackend.py
 Restart=always
 RestartSec=5
 TimeoutStopSec=15
