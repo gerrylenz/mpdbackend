@@ -1,0 +1,13 @@
+pyproject.toml
+setup.py
+mpdbackend/__init__.py
+mpdbackend/constants.py
+mpdbackend/parsers.py
+mpdbackend/provider.py
+mpdbackend.egg-info/PKG-INFO
+mpdbackend.egg-info/SOURCES.txt
+mpdbackend.egg-info/dependency_links.txt
+mpdbackend.egg-info/entry_points.txt
+mpdbackend.egg-info/top_level.txt
+tests/test_parsers.py
+tests/test_provider_parsing.py

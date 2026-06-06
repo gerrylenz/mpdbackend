@@ -97,7 +97,7 @@ class ChannelRegistry:
         """Liest die Sender aus der konfigurierten JSON-Datei."""
         if not self._channels_file or not os.path.isfile(self._channels_file):
             logger.warning(
-                "Channels file not found: %s (copy channels.json.example to channels.json)",
+                "Channels file not found: %s (copy example/channels.json.example to channels.json)",
                 self._channels_file or DEFAULT_CHANNELS_FILE,
             )
             self._mtime = None
@@ -159,6 +159,12 @@ def save_current_track_file(song: dict, output_path: str | None = None) -> str:
     parent = os.path.dirname(target_abs)
     if parent:
         os.makedirs(parent, exist_ok=True)
+
+    if os.path.isfile(target_abs):
+        with open(target_abs, encoding="utf-8") as handle:
+            lines = [line.strip() for line in handle if line.strip()]
+        if lines and lines[-1] == track_file:
+            return track_file
 
     with open(target_abs, "a", encoding="utf-8") as handle:
         handle.write(track_file)

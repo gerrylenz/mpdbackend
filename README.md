@@ -77,7 +77,7 @@ A shared **`channels.json`** (e.g. on the Music Assistant host) lists all statio
 | **3× MPD, Music Assistant** | One **canonical** `channels.json` (template: `channels.json.example.multi`) with matching `backend_url` per channel; MA default backend URL points to **one** instance that serves `/channels` |
 | **3× MPD, web player only** | Per mpdbackend, optionally **only that instance’s** channel in `channels.json` — or full list for MA only |
 
-Example files: `server/channels.json.example` (one station), `server/channels.json.example.multi` (three MPD on one host).
+Example files: `server/example/channels.json.example` (one station), `server/example/channels.json.example.multi` (three MPD on one host).
 
 ## Features
 
@@ -102,8 +102,11 @@ mpdbackend/
 │   ├── mpdbackend_cover.py    # Cover extraction and cache
 │   ├── web/                   # Web player (HTML/CSS/JS)
 │   ├── home_assistant/        # MQTT integration examples (HA)
-│   ├── channels.json.example          # 1 MPD, 1 channel
-│   ├── channels.json.example.multi  # 3 MPD, routing via backend_url
+│   ├── example/
+│   │   ├── channels.json.example          # 1 MPD, 1 channel
+│   │   └── channels.json.example.multi    # 3 MPD, routing via backend_url
+│   ├── tools/
+│   │   └── delete_marked_files.py         # Cron job: delete marked tracks
 │   ├── install/
 │   │   ├── install.sh
 │   │   └── requirements.txt
@@ -257,7 +260,7 @@ See `server/systemd/mpdbackend.env.example` for the full list.
 
 At **`http://host:4533/`** mpdbackend serves a responsive web UI — layout and typography adapt to the caller’s viewport (`clamp`, `vmin`, `dvh`; portrait, landscape, various screen sizes):
 
-**Protection:** set `MPDBACKEND_WEB_PASSWORD` → without `?password=…` in the URL: **channel picker + stream only** (no MPD control). With `http://host:4533/?password=secret` in the URL: **full access**. **No cookie** — the password must stay in the URL (bookmark with password). `POST /cmd/*` and `GET /playlists` check `?password=`; stream/`/channels`/`/nowplaying` work without it.
+**Protection:** set `MPDBACKEND_WEB_PASSWORD` → without `?password=…` in the URL: **channel picker + stream only** (no MPD control). With `http://host:4533/?password=secret` in the URL: **full access**. **No cookie** — the password must stay in the URL (bookmark with password). `POST /cmd/*`, `GET /playlists`, `GET /markfordelete`, and `POST /markfordelete/clear` check `?password=`; stream/`/channels`/`/nowplaying` work without it.
 
 - **Display:** cover, title, artist, album, progress (elapsed/duration), track position in playlist
 - **Channel:** picker from `channels.json` (logo + `stream_url`)
@@ -279,7 +282,34 @@ Audio comes from the **HTTP stream** (MPD `httpd`/Icecast); control and metadata
 Artist/Album/Track.mp3
 ```
 
-An external job can read this file and process the entry (delete, move, enqueue, etc.).
+Duplicate consecutive entries for the same track are skipped automatically.
+
+**Cleanup tool** (`tools/delete_marked_files.py`, installed with `install.sh`):
+
+```bash
+python3 tools/delete_marked_files.py \
+  --url http://127.0.0.1:4533 \
+  --music-root /home/musik/alben \
+  --cover-dir /path/to/data/covers \
+  --mpd-update \
+  --password secret   # when MPDBACKEND_WEB_PASSWORD is set
+```
+
+| Flag | Purpose |
+|------|---------|
+| `--dry-run` | Log only, no deletes |
+| `--cover-dir` | Remove cached cover JPEGs for deleted tracks |
+| `--mpd-update` | Run `mpc update` after successful deletes |
+| `--keep-list-on-error` | Do not clear the server list when errors occurred |
+| `--password` | `?password=` for protected `/markfordelete` endpoints |
+
+**Cron / systemd timer** (example, nightly at 03:00):
+
+```cron
+0 3 * * * /opt/mpdbackend/venv/bin/python /opt/mpdbackend/tools/delete_marked_files.py \
+  --url http://127.0.0.1:4533 --music-root /home/musik/alben \
+  --cover-dir /opt/mpdbackend/data/covers --mpd-update >> /var/log/delete_marked_files.log 2>&1
+```
 
 ## HTTP API
 
@@ -298,6 +328,8 @@ An external job can read this file and process the entry (delete, move, enqueue,
 | `POST /cmd/volume` | Set volume: plain text `0`–`100` |
 | `POST /cmd/playlist` | Load and play playlist: plain text e.g. `Pop.m3u` |
 | `POST /cmd/savefile` | **Append** current MPD file path to `MPDBACKEND_MARKED_FOR_DELETE` |
+| `GET /markfordelete` | Marked file paths as JSON (`files` array); optional `?channel=` |
+| `POST /markfordelete/clear` | Empty `MPDBACKEND_MARKED_FOR_DELETE` on this server |
 
 **`/nowplaying` response** (example):
 

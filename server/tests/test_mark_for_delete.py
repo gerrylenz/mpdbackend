@@ -23,3 +23,24 @@ def test_clear_marked_for_delete_file(tmp_path):
     assert path == str(cfg.resolve())
     assert cfg.read_text(encoding="utf-8") == ""
     assert backend.load_marked_for_delete_entries(str(cfg)) == []
+
+
+def test_save_current_track_file_appends(tmp_path):
+    cfg = tmp_path / "mark_for_delete.cfg"
+    song = {"file": "Artist/Album/track.mp3"}
+
+    written = backend.save_current_track_file(song, str(cfg))
+
+    assert written == "Artist/Album/track.mp3"
+    assert cfg.read_text(encoding="utf-8") == "Artist/Album/track.mp3\n"
+
+
+def test_save_current_track_file_skips_duplicate_consecutive(tmp_path):
+    cfg = tmp_path / "mark_for_delete.cfg"
+    cfg.write_text("Artist/Album/track.mp3\n", encoding="utf-8")
+    song = {"file": "Artist/Album/track.mp3"}
+
+    written = backend.save_current_track_file(song, str(cfg))
+
+    assert written == "Artist/Album/track.mp3"
+    assert cfg.read_text(encoding="utf-8") == "Artist/Album/track.mp3\n"
