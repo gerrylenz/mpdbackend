@@ -284,29 +284,27 @@ Aufeinanderfolgende Doppel-Einträge für denselben Titel werden automatisch üb
 
 **Lösch-Tool** (`tools/delete_marked_files.py`, wird mit `install.sh` mitinstalliert):
 
+Konfiguration in `tools/delete_marked_files.env` (Vorlage: `delete_marked_files.env.example`). CLI-Flags überschreiben die Datei. Alternativ: `--config /pfad/zu/mpdbackend.env` (liest `MPDBACKEND_*`-Schlüssel).
+
 ```bash
-python3 tools/delete_marked_files.py \
-  --url http://127.0.0.1:4533 \
-  --music-root /home/musik/alben \
-  --cover-dir /pfad/zu/data/covers \
-  --mpd-update \
-  --password geheim   # wenn MPDBACKEND_WEB_PASSWORD gesetzt ist
+python3 tools/delete_marked_files.py
+python3 tools/delete_marked_files.py --dry-run
+python3 tools/delete_marked_files.py --config /etc/mpdbackend.env
 ```
 
 | Flag | Zweck |
 |------|-------|
-| `--dry-run` | Nur anzeigen, nichts löschen |
-| `--cover-dir` | Gecachte Cover-JPEGs der gelöschten Titel entfernen |
-| `--mpd-update` | Nach erfolgreichem Löschen `mpc update` ausführen |
+| `--config` | Pfad zur Konfigurationsdatei (Standard: `delete_marked_files.env` neben dem Skript) |
+| `--dry-run` | Nur anzeigen, nichts löschen (oder Config `DRY_RUN=true`) |
+| `--cover-dir` | Gecachte Cover-JPEGs entfernen (oder Config `COVER_DIR`) |
+| `--mpd-update` | Nach erfolgreichem Löschen `mpc update` (oder Config `MPD_UPDATE=true`) |
 | `--keep-list-on-error` | Markierliste bei Fehlern nicht leeren |
-| `--password` | `?password=` für geschützte `/markfordelete`-Endpunkte |
+| `--password` | `?password=`-Override für geschützte `/markfordelete`-Endpunkte |
 
 **Cron / systemd-Timer** (Beispiel, täglich 03:00 Uhr):
 
 ```cron
-0 3 * * * /opt/mpdbackend/venv/bin/python /opt/mpdbackend/tools/delete_marked_files.py \
-  --url http://127.0.0.1:4533 --music-root /home/musik/alben \
-  --cover-dir /opt/mpdbackend/data/covers --mpd-update >> /var/log/delete_marked_files.log 2>&1
+0 3 * * * /opt/mpdbackend/venv/bin/python /opt/mpdbackend/tools/delete_marked_files.py >> /var/log/delete_marked_files.log 2>&1
 ```
 
 ## HTTP-API

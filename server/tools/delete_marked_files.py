@@ -3,12 +3,12 @@
 """
 Löscht Dateien aus der mpdbackend-Markierliste (GET /markfordelete).
 
-Konfiguration nur in DEFAULT_* unten (optional per CLI überschreiben).
+Konfiguration in delete_marked_files.env neben diesem Skript (Vorlage:
+delete_marked_files.env.example). CLI-Argumente überschreiben die Datei.
 
 Beispiel:
   python3 delete_marked_files.py --dry-run
-  python3 delete_marked_files.py --mpd-update --cover-dir /path/to/data/covers
-  python3 delete_marked_files.py --password geheim
+  python3 delete_marked_files.py --config /etc/delete_marked_files.env
 """
 
 from __future__ import annotations
@@ -16,25 +16,158 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import subprocess
 import sys
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-# --- Konfiguration (hier anpassen) ---
-DEFAULT_MPDBACKEND_URL = "http://127.0.0.1:4533"
-DEFAULT_MPDBACKEND_CHANNEL = "0"
-DEFAULT_MPDBACKEND_MUSIC_ROOT = "/home/musik/alben"
-DEFAULT_COVER_DIR = ""
+SCRIPT_DIR = Path(__file__).resolve().parent
+DEFAULT_CONFIG_NAME = "delete_marked_files.env"
+
+_BUILTIN_DEFAULTS = {
+    "URL": "http://127.0.0.1:4533",
+    "CHANNEL": "0",
+    "MUSIC_ROOT": "/home/musik/alben",
+    "COVER_DIR": "",
+    "PASSWORD": "",
+    "MPD_UPDATE": "false",
+    "KEEP_LIST_ON_ERROR": "false",
+    "DRY_RUN": "false",
+}
+
+_MPDBACKEND_ALIASES = {
+    "MPDBACKEND_PUBLIC_BASE_URL": "URL",
+    "MPDBACKEND_MUSIC_ROOT": "MUSIC_ROOT",
+    "MPDBACKEND_COVER_DIR": "COVER_DIR",
+    "MPDBACKEND_WEB_PASSWORD": "PASSWORD",
+}
 
 
 def log(message: str) -> None:
     """Ausgabe auf der Konsole (sofort sichtbar)."""
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"{ts} {message}", flush=True)
+
+
+def parse_env_file(path: Path) -> dict[str, str]:
+    """Liest KEY=VALUE-Zeilen aus einer Env-Datei."""
+    values: dict[str, str] = {}
+    with path.open(encoding="utf-8") as handle:
+        for raw_line in handle:
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key = key.strip()
+            if key:
+                values[key] = value.strip()
+    return values
+
+
+def normalize_config(raw: dict[str, str]) -> dict[str, str]:
+    """Vereinheitlicht Schlüssel und übernimmt mpdbackend.env-Aliase."""
+    config = {key.upper(): value for key, value in raw.items()}
+
+    for source_key, target_key in _MPDBACKEND_ALIASES.items():
+        if source_key.upper() in config and not config.get(target_key, "").strip():
+            config[target_key] = config[source_key.upper()]
+
+    if not config.get("URL", "").strip():
+        port = config.get("MPDBACKEND_HTTP_PORT", "").strip()
+        if port:
+            config["URL"] = f"http://127.0.0.1:{port}"
+
+    return config
+
+
+def resolve_config_path(explicit: str | None) -> Path | None:
+    """Ermittelt die zu ladende Konfigurationsdatei."""
+    if explicit:
+        return Path(explicit).expanduser()
+
+    env_path = os.getenv("DELETE_MARKED_CONFIG", "").strip()
+    if env_path:
+        return Path(env_path).expanduser()
+
+    local = SCRIPT_DIR / DEFAULT_CONFIG_NAME
+    if local.is_file():
+        return local
+
+    parent_env = SCRIPT_DIR.parent / "mpdbackend.env"
+    if parent_env.is_file():
+        return parent_env
+
+    return None
+
+
+def load_config(explicit: str | None) -> tuple[dict[str, str], Path | None]:
+    """Lädt Konfiguration; fehlende Datei → eingebaute Defaults."""
+    path = resolve_config_path(explicit)
+    if path is None:
+        return dict(_BUILTIN_DEFAULTS), None
+    if not path.is_file():
+        raise FileNotFoundError(f"Konfigurationsdatei nicht gefunden: {path}")
+
+    merged = dict(_BUILTIN_DEFAULTS)
+    merged.update(normalize_config(parse_env_file(path)))
+    return merged, path
+
+
+def config_bool(raw: str) -> bool:
+    """Wandelt Konfigurationswerte in bool um."""
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+@dataclass(frozen=True)
+class Settings:
+    url: str
+    channel: str
+    music_root: str
+    password: str
+    cover_dir: str
+    mpd_update: bool
+    keep_list_on_error: bool
+    dry_run: bool
+    config_path: Path | None
+
+
+def build_settings(args: argparse.Namespace) -> Settings:
+    """Kombiniert Konfigurationsdatei und CLI (CLI hat Vorrang)."""
+    config, config_path = load_config(args.config)
+
+    def from_config(key: str) -> str:
+        return config.get(key, _BUILTIN_DEFAULTS.get(key, "")).strip()
+
+    url = args.url if args.url is not None else from_config("URL")
+    channel = args.channel if args.channel is not None else from_config("CHANNEL")
+    music_root = (
+        args.music_root if args.music_root is not None else from_config("MUSIC_ROOT")
+    )
+    password = args.password if args.password is not None else from_config("PASSWORD")
+    cover_dir = args.cover_dir if args.cover_dir is not None else from_config("COVER_DIR")
+
+    mpd_update = args.mpd_update or config_bool(from_config("MPD_UPDATE"))
+    keep_list_on_error = args.keep_list_on_error or config_bool(
+        from_config("KEEP_LIST_ON_ERROR")
+    )
+    dry_run = args.dry_run or config_bool(from_config("DRY_RUN"))
+
+    return Settings(
+        url=url,
+        channel=channel,
+        music_root=music_root,
+        password=password,
+        cover_dir=cover_dir,
+        mpd_update=mpd_update,
+        keep_list_on_error=keep_list_on_error,
+        dry_run=dry_run,
+        config_path=config_path,
+    )
 
 
 def build_request_url(
@@ -249,62 +382,82 @@ def parse_args() -> argparse.Namespace:
         description="Delete files listed in mpdbackend /markfordelete JSON."
     )
     parser.add_argument(
+        "--config",
+        default=None,
+        help=(
+            f"path to config file (default: {DEFAULT_CONFIG_NAME} beside script, "
+            "else ../mpdbackend.env; override with DELETE_MARKED_CONFIG)"
+        ),
+    )
+    parser.add_argument(
         "--url",
-        default=DEFAULT_MPDBACKEND_URL,
-        help=f"mpdbackend base URL (default: {DEFAULT_MPDBACKEND_URL})",
+        default=None,
+        help="mpdbackend base URL (overrides config URL)",
     )
     parser.add_argument(
         "--music-root",
-        default=DEFAULT_MPDBACKEND_MUSIC_ROOT,
-        help=f"music library root (default: {DEFAULT_MPDBACKEND_MUSIC_ROOT})",
+        default=None,
+        help="music library root (overrides config MUSIC_ROOT)",
     )
     parser.add_argument(
         "--channel",
-        default=DEFAULT_MPDBACKEND_CHANNEL,
-        help=f"channel id for ?channel= proxy (default: {DEFAULT_MPDBACKEND_CHANNEL})",
+        default=None,
+        help="channel id for ?channel= proxy (overrides config CHANNEL)",
     )
     parser.add_argument(
         "--password",
-        default="",
-        help="web password for ?password= (required when MPDBACKEND_WEB_PASSWORD is set)",
+        default=None,
+        help="web password for ?password= (overrides config PASSWORD)",
     )
     parser.add_argument(
         "--cover-dir",
-        default=DEFAULT_COVER_DIR,
-        help="cover cache directory to clean up (optional)",
+        default=None,
+        help="cover cache directory (overrides config COVER_DIR)",
     )
     parser.add_argument(
         "--mpd-update",
         action="store_true",
-        help="run mpc update after successful deletes",
+        help="run mpc update after successful deletes (or config MPD_UPDATE=true)",
     )
     parser.add_argument(
         "--keep-list-on-error",
         action="store_true",
-        help="do not clear mark list on the server when delete errors occurred",
+        help="do not clear mark list when delete errors occurred",
     )
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="only print what would be deleted",
+        help="only print what would be deleted (or config DRY_RUN=true)",
     )
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
+    try:
+        settings = build_settings(args)
+    except FileNotFoundError as err:
+        log(f"FEHLER: {err}")
+        return 2
+
     log("=== delete_marked_files ===")
-    log(f"mpdbackend: {args.url}")
-    log(f"Kanal: {args.channel or '(keiner)'}")
-    log(f"Musik-Wurzel: {args.music_root}")
-    if args.password:
+    if settings.config_path:
+        log(f"Konfiguration: {settings.config_path}")
+    else:
+        log("Konfiguration: (keine Datei, eingebaute Defaults)")
+    log(f"mpdbackend: {settings.url}")
+    log(f"Kanal: {settings.channel or '(keiner)'}")
+    log(f"Musik-Wurzel: {settings.music_root}")
+    if settings.password:
         log("Passwort: (gesetzt)")
-    if args.dry_run:
+    if settings.mpd_update:
+        log("MPD-Update: ja")
+    if settings.dry_run:
         log("Modus: Dry-Run (es wird nichts gelöscht)")
     else:
         log("Modus: Löschen")
 
-    music_root = Path(args.music_root)
+    music_root = Path(settings.music_root)
     log("Prüfe Musik-Wurzel …")
     if not music_root.is_dir():
         log(f"FEHLER: Verzeichnis nicht gefunden: {music_root}")
@@ -312,8 +465,8 @@ def main() -> int:
     log(f"Musik-Wurzel OK: {music_root.resolve()}")
 
     cover_dir: Path | None = None
-    if args.cover_dir.strip():
-        cover_dir = Path(args.cover_dir)
+    if settings.cover_dir.strip():
+        cover_dir = Path(settings.cover_dir)
         if not cover_dir.is_dir():
             log(f"FEHLER: Cover-Verzeichnis nicht gefunden: {cover_dir}")
             return 2
@@ -321,7 +474,7 @@ def main() -> int:
 
     try:
         payload = fetch_marked_files(
-            args.url, args.channel, password=args.password
+            settings.url, settings.channel, password=settings.password
         )
     except (HTTPError, URLError, TimeoutError, OSError, ValueError) as err:
         log(f"FEHLER beim Abruf: {err}")
@@ -335,10 +488,10 @@ def main() -> int:
         log("--- Markierdatei auf dem Server leeren ---")
         try:
             clear_marked_files_on_server(
-                args.url,
-                args.channel,
-                dry_run=args.dry_run,
-                password=args.password,
+                settings.url,
+                settings.channel,
+                dry_run=settings.dry_run,
+                password=settings.password,
             )
         except (HTTPError, URLError, TimeoutError, OSError, ValueError) as err:
             log(f"FEHLER beim Leeren der Markierdatei: {err}")
@@ -350,7 +503,7 @@ def main() -> int:
     deleted, skipped, errors = delete_marked(
         music_root,
         rel_paths,
-        dry_run=args.dry_run,
+        dry_run=settings.dry_run,
         cover_dir=cover_dir,
     )
 
@@ -362,21 +515,21 @@ def main() -> int:
 
     if errors:
         log("Programm beendet mit Fehlern")
-        if args.keep_list_on_error:
+        if settings.keep_list_on_error:
             log("Markierliste bleibt erhalten (--keep-list-on-error)")
         return 1
 
-    if args.mpd_update:
+    if settings.mpd_update:
         log("--- MPD-Datenbank aktualisieren ---")
-        run_mpd_update(dry_run=args.dry_run)
+        run_mpd_update(dry_run=settings.dry_run)
 
     log("--- Markierdatei auf dem Server leeren ---")
     try:
         clear_marked_files_on_server(
-            args.url,
-            args.channel,
-            dry_run=args.dry_run,
-            password=args.password,
+            settings.url,
+            settings.channel,
+            dry_run=settings.dry_run,
+            password=settings.password,
         )
     except (HTTPError, URLError, TimeoutError, OSError, ValueError) as err:
         log(f"FEHLER beim Leeren der Markierdatei: {err}")
