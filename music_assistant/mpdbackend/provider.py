@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import re
 import time
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
 
-from music_assistant_models.enums import ContentType, ImageType, MediaType, StreamType
+from music_assistant_models.enums import ContentType, ImageType, MediaType, PlaybackState, StreamType
 from music_assistant_models.errors import MediaNotFoundError, UnplayableMediaError
 from music_assistant_models.media_items import (
     AudioFormat,
@@ -26,6 +27,7 @@ from .constants import (
     CONF_BACKEND_URL,
     CONTENT_TYPE_FROM_STRING,
     STREAM_METADATA_UPDATE_INTERVAL,
+    PLAYLIST_RESUME_DELAY,
     RadioMpdChannel,
 )
 
@@ -50,6 +52,7 @@ class MPDBackendRadioProvider(MusicProvider):
         self._last_seconds_streamed: dict[str, int] = {}
         self._channels: dict[str, RadioMpdChannel] = {}
         self._channels_loaded_at = 0.0
+        self._last_playlists: dict[str, str] = {}
 
     async def loaded_in_mass(self) -> None:
         """Load radio channels from mpdbackend after the provider is loaded."""
@@ -475,6 +478,80 @@ class MPDBackendRadioProvider(MusicProvider):
 
         return f"at:{artist}:{title}"
 
+    @staticmethod
+    def _active_playlist_name(nowplaying: dict[str, Any]) -> str:
+        """MPD-Playlist-Name aus /nowplaying (falls gesetzt)."""
+        return str(nowplaying.get("playlist") or "").strip()
+
+    def _playlist_changed(self, channel_id: str, nowplaying: dict[str, Any]) -> bool:
+        """True wenn sich die aktive MPD-Playlist seit dem letzten Poll geändert hat."""
+        current = self._active_playlist_name(nowplaying)
+        previous = self._last_playlists.get(channel_id, "")
+        self._last_playlists[channel_id] = current
+        return bool(current) and current != previous
+
+    async def _resume_radio_queues(self, channel_id: str) -> None:
+        """Setzt MA-Wiedergabe fort, wenn MPD spielt aber der Player gestoppt ist."""
+        for queue in self.mass.player_queues.all():
+            current_item = queue.current_item
+            streamdetails = current_item.streamdetails if current_item else None
+            if not streamdetails:
+                continue
+            if streamdetails.provider != self.instance_id:
+                continue
+            if streamdetails.item_id != channel_id:
+                continue
+            if queue.state == PlaybackState.PLAYING:
+                continue
+
+            queue_id = queue.queue_id
+            try:
+                if queue.state == PlaybackState.PAUSED:
+                    player = self.mass.players.get_player(queue_id)
+                    if player:
+                        await player.play()
+                        self.logger.info(
+                            "Auto-resumed paused queue %s (channel %s)",
+                            queue_id,
+                            channel_id,
+                        )
+                    continue
+
+                if current_item is None:
+                    continue
+                await self.mass.player_queues.play_index(
+                    queue_id,
+                    current_item.queue_item_id,
+                )
+                self.logger.info(
+                    "Auto-resumed idle queue %s after playlist change (channel %s)",
+                    queue_id,
+                    channel_id,
+                )
+            except (MediaNotFoundError, UnplayableMediaError) as err:
+                self.logger.warning(
+                    "Auto-resume queue %s skipped (stream not ready): %s",
+                    queue_id,
+                    err,
+                )
+            except Exception as err:
+                self.logger.warning(
+                    "Auto-resume queue %s failed: %s", queue_id, err
+                )
+
+    def _schedule_playlist_resume(self, channel_id: str) -> None:
+        """Wartet kurz, bis der MPD-Stream nach Playlist-Wechsel wieder läuft."""
+        task_id = f"{self.instance_id}_playlist_resume_{channel_id}"
+
+        async def _resume_after_delay() -> None:
+            await asyncio.sleep(PLAYLIST_RESUME_DELAY)
+            nowplaying = await self._get_nowplaying(channel_id)
+            if nowplaying.get("state") != "play":
+                return
+            await self._resume_radio_queues(channel_id)
+
+        self.mass.create_task(_resume_after_delay(), task_id=task_id)
+
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get streamdetails for a radio channel."""
         if media_type != MediaType.RADIO:
@@ -488,6 +565,7 @@ class MPDBackendRadioProvider(MusicProvider):
         stream_url = channel_info["stream_url"]
         playback_session = self._bump_playback_session(item_id)
         self._last_track_keys[item_id] = self._build_track_key(nowplaying)
+        self._last_playlists[item_id] = self._active_playlist_name(nowplaying)
 
         stream_details = StreamDetails(
             item_id=item_id,
@@ -527,6 +605,7 @@ class MPDBackendRadioProvider(MusicProvider):
 
         track_key = self._build_track_key(nowplaying)
         track_changed = track_key != self._last_track_keys.get(channel_id)
+        playlist_changed = self._playlist_changed(channel_id, nowplaying)
         stream_restarted = self._stream_restarted(channel_id, seconds_streamed)
         playback_session: int | None = None
 
@@ -549,9 +628,14 @@ class MPDBackendRadioProvider(MusicProvider):
         )
         streamdetails.stream_metadata_last_updated = time.time()
 
+        # Bei Playlist-Wechsel kein force_update (verhindert Stream-Reload auf Chromecast)
+        metadata_force = (track_changed and not playlist_changed) or stream_restarted
         await self._push_stream_metadata_to_active_queues(
             nowplaying,
-            force_update=track_changed or stream_restarted,
+            force_update=metadata_force,
             playback_session=playback_session,
         )
+
+        if playlist_changed and nowplaying.get("state") == "play":
+            self._schedule_playlist_resume(channel_id)
 

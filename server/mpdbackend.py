@@ -439,12 +439,16 @@ class MPD:
             return False
 
         def _load_play(client):
+            # Atomar: kürzeste Unterbrechung für HTTP/Icecast-Stream (Music Assistant)
+            client.command_list_ok_begin()
             client.clear()
             client.load(mpd_name)
             client.play()
+            client.command_list_end()
 
         ok = self.run_command(_load_play)
         if ok:
+            self.invalidate_playlists_cache()
             logger.info("Loaded and playing playlist: %s", playlist_name)
         return ok
 
