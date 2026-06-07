@@ -109,16 +109,52 @@ class HTTPAPI:
             return publisher.loaded_playlist
         return self.loaded_playlist
 
-    def _build_playlist_state(self) -> dict:
-        """Verfügbare und aktive MPD-Playlist für HTTP-Responses."""
-        from mpdbackend import resolve_active_playlist_name
+    def _persist_loaded_playlist(self, name: str) -> None:
+        """Merkt sich die erkannte Playlist für spätere Anfragen."""
+        name = (name or "").strip()
+        if not name:
+            return
+        self.loaded_playlist = name
+        publisher = self.worker.mqtt_publisher
+        if publisher:
+            publisher.set_loaded_playlist(name)
+
+    def _resolve_active_playlist(self) -> str:
+        """Aktive Playlist inkl. MPD-Status und Track-Abgleich mit .m3u-Dateien."""
+        from mpdbackend import (
+            parse_status_lastloadedplaylist,
+            resolve_active_playlist_name,
+        )
 
         status = self.worker.last_status or {}
+        song = self.worker.last_song or {}
         available = self.worker.mpd.available_playlists()
+        loaded = self._resolve_loaded_playlist()
         active = resolve_active_playlist_name(
-            status, self._resolve_loaded_playlist(), available
+            status,
+            loaded,
+            available,
+            mpd=self.worker.mpd,
+            current_file=song.get("file") or "",
         )
-        return {"playlists": available, "active": active}
+        if active:
+            if not loaded:
+                mpd_raw = parse_status_lastloadedplaylist(status)
+                self._persist_loaded_playlist(
+                    mpd_raw or self.worker.mpd.normalize_playlist_name(active)
+                )
+            return active
+
+        mpd_raw = parse_status_lastloadedplaylist(status)
+        if mpd_raw:
+            self._persist_loaded_playlist(mpd_raw)
+
+        return ""
+
+    def _build_playlist_state(self) -> dict:
+        """Verfügbare und aktive MPD-Playlist für HTTP-Responses."""
+        available = self.worker.mpd.available_playlists()
+        return {"playlists": available, "active": self._resolve_active_playlist()}
 
     def _channel_backend_url(self, channel_id: str) -> str | None:
         """backend_url aus channels.json für eine Kanal-ID."""
@@ -419,11 +455,7 @@ class HTTPAPI:
 
     def handle_nowplaying(self, req):
         """GET /nowplaying – aktuelle Track-Metadaten als JSON."""
-        from mpdbackend import (
-            parse_status_volume,
-            public_cover_url,
-            resolve_active_playlist_name,
-        )
+        from mpdbackend import parse_status_volume, public_cover_url
 
         parsed = urlparse(req.path)
         query = dict(parse_qsl(parsed.query))
@@ -436,10 +468,7 @@ class HTTPAPI:
         song = self.worker.last_song or {}
         status = self.worker.last_status or {}
         elapsed_status = self.worker.build_elapsed_status()
-        available = self.worker.mpd.available_playlists()
-        active_playlist = resolve_active_playlist_name(
-            status, self._resolve_loaded_playlist(), available
-        )
+        active_playlist = self._resolve_active_playlist()
 
         data = {
             "state": status.get("state"),

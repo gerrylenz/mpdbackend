@@ -35,7 +35,7 @@ try:
 except ImportError:
     pystray = None  # type: ignore[assignment]
 
-from windows_util import autostart_enabled, load_tray_image, set_autostart
+from windows_util import autostart_enabled, configure_webview2_for_http, load_tray_image, set_autostart
 
 APP_NAME = "mpdbackend-player"
 DEFAULT_URL = "http://127.0.0.1:4533"
@@ -171,7 +171,7 @@ def load_config() -> dict[str, Any]:
     if not isinstance(data, dict):
         return config
     if str(data.get("url") or "").strip():
-        config["url"] = str(data["url"]).strip().rstrip("/")
+        config["url"] = normalize_base_url(str(data["url"]))
     config["password"] = str(data.get("password") or "")
     if "minimize_to_tray" in data:
         config["minimize_to_tray"] = bool(data["minimize_to_tray"]) if isinstance(
@@ -188,7 +188,7 @@ def save_config(config: dict[str, Any]) -> None:
     directory = config_dir()
     directory.mkdir(parents=True, exist_ok=True)
     payload = {
-        "url": str(config.get("url") or DEFAULT_URL).strip().rstrip("/"),
+        "url": normalize_base_url(str(config.get("url") or DEFAULT_URL)),
         "password": str(config.get("password") or ""),
         "minimize_to_tray": bool(config.get("minimize_to_tray", True)),
         "autostart": bool(config.get("autostart", False)),
@@ -199,8 +199,44 @@ def save_config(config: dict[str, Any]) -> None:
     )
 
 
+def is_private_host(host: str) -> bool:
+    host = host.lower().strip("[]")
+    if host in ("127.0.0.1", "localhost", "::1"):
+        return True
+    if host.endswith(".local"):
+        return True
+    parts = host.split(".")
+    if len(parts) == 4 and all(part.isdigit() and 0 <= int(part) <= 255 for part in parts):
+        first, second = int(parts[0]), int(parts[1])
+        if first == 10:
+            return True
+        if first == 192 and second == 168:
+            return True
+        if first == 172 and 16 <= second <= 31:
+            return True
+    return False
+
+
+def normalize_base_url(url: str) -> str:
+    """Basis-URL für mpdbackend (Standard: plain HTTP)."""
+    raw = url.strip().rstrip("/")
+    if not raw:
+        return DEFAULT_URL
+    if "://" not in raw:
+        raw = f"http://{raw}"
+    parts = urlsplit(raw)
+    if not parts.netloc:
+        return DEFAULT_URL
+    scheme = (parts.scheme or "http").lower()
+    host = (parts.hostname or "").lower()
+    if scheme == "https" and is_private_host(host):
+        scheme = "http"
+    normalized = urlunsplit((scheme, parts.netloc, parts.path.rstrip("/"), "", ""))
+    return normalized.rstrip("/") or DEFAULT_URL
+
+
 def player_url(base_url: str, password: str) -> str:
-    base = base_url.strip().rstrip("/")
+    base = normalize_base_url(base_url)
     if not password.strip():
         return f"{base}/"
     return f"{base}/?password={quote(password.strip(), safe='')}"
@@ -221,13 +257,19 @@ def edit_settings_dialog(config: dict[str, Any]) -> dict[str, Any] | None:
     ttk.Label(frame, text="mpdbackend URL:").grid(row=0, column=0, sticky="w")
     url_var = tk.StringVar(value=str(config.get("url", DEFAULT_URL)))
     ttk.Entry(frame, textvariable=url_var, width=42).grid(
-        row=1, column=0, columnspan=2, sticky="ew", pady=(4, 12)
+        row=1, column=0, columnspan=2, sticky="ew", pady=(4, 4)
     )
+    ttk.Label(
+        frame,
+        text="Standard: http:// (nicht https://), z. B. http://192.168.1.10:4533",
+        foreground="#666666",
+        wraplength=360,
+    ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(0, 12))
 
-    ttk.Label(frame, text="Web-Passwort (optional):").grid(row=2, column=0, sticky="w")
+    ttk.Label(frame, text="Web-Passwort (optional):").grid(row=3, column=0, sticky="w")
     pwd_var = tk.StringVar(value=str(config.get("password", "")))
     ttk.Entry(frame, textvariable=pwd_var, width=42, show="*").grid(
-        row=3, column=0, columnspan=2, sticky="ew", pady=(4, 12)
+        row=4, column=0, columnspan=2, sticky="ew", pady=(4, 12)
     )
 
     tray_var = tk.BooleanVar(value=bool(config.get("minimize_to_tray", True)))
@@ -235,14 +277,14 @@ def edit_settings_dialog(config: dict[str, Any]) -> dict[str, Any] | None:
         frame,
         text="Beim Schließen in Taskleiste minimieren",
         variable=tray_var,
-    ).grid(row=4, column=0, columnspan=2, sticky="w", pady=(0, 4))
+    ).grid(row=5, column=0, columnspan=2, sticky="w", pady=(0, 4))
 
     autostart_var = tk.BooleanVar(value=bool(config.get("autostart", False)))
     ttk.Checkbutton(
         frame,
         text="Mit Windows starten",
         variable=autostart_var,
-    ).grid(row=5, column=0, columnspan=2, sticky="w", pady=(0, 12))
+    ).grid(row=6, column=0, columnspan=2, sticky="w", pady=(0, 12))
 
     result: dict[str, Any | None] = {"value": None}
 
@@ -251,14 +293,18 @@ def edit_settings_dialog(config: dict[str, Any]) -> dict[str, Any] | None:
         if not url:
             messagebox.showerror("Fehler", "Bitte eine URL angeben.", parent=root)
             return
-        parts = urlsplit(url if "://" in url else f"http://{url}")
-        if not parts.netloc:
+        normalized = normalize_base_url(url)
+        if not urlsplit(normalized).netloc:
             messagebox.showerror("Fehler", "Ungültige URL.", parent=root)
             return
-        scheme = parts.scheme or "http"
-        normalized = urlunsplit((scheme, parts.netloc, parts.path.rstrip("/"), "", ""))
+        if url.strip().lower().startswith("https://") and normalized.startswith("http://"):
+            messagebox.showinfo(
+                "Hinweis",
+                "Für lokale/LAN-Adressen wird http:// verwendet (mpdbackend ohne HTTPS).",
+                parent=root,
+            )
         result["value"] = {
-            "url": normalized.rstrip("/"),
+            "url": normalized,
             "password": pwd_var.get(),
             "minimize_to_tray": tray_var.get(),
             "autostart": autostart_var.get(),
@@ -269,7 +315,7 @@ def edit_settings_dialog(config: dict[str, Any]) -> dict[str, Any] | None:
         root.destroy()
 
     buttons = ttk.Frame(frame)
-    buttons.grid(row=6, column=0, columnspan=2, sticky="e")
+    buttons.grid(row=7, column=0, columnspan=2, sticky="e")
     ttk.Button(buttons, text="Abbrechen", command=on_cancel).grid(row=0, column=0, padx=(0, 8))
     ttk.Button(buttons, text="Speichern", command=on_ok).grid(row=0, column=1)
 
@@ -293,12 +339,29 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def maybe_fix_saved_url(config: dict[str, Any]) -> None:
+    """Speichert korrigierte http://-URL, falls in config.json noch https:// stand."""
+    path = config_path()
+    if not path.is_file():
+        return
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+    if not isinstance(data, dict):
+        return
+    raw = str(data.get("url") or "").strip().rstrip("/")
+    fixed = normalize_base_url(raw) if raw else normalize_base_url(str(config.get("url", DEFAULT_URL)))
+    if raw and fixed != raw:
+        save_config(config)
+
+
 def main() -> int:
     args = parse_args()
     config = load_config()
 
     if args.url:
-        config["url"] = args.url.strip().rstrip("/")
+        config["url"] = normalize_base_url(args.url)
     if args.password is not None:
         config["password"] = args.password
     if args.no_tray:
@@ -317,8 +380,15 @@ def main() -> int:
     if config.get("autostart") and not autostart_enabled():
         set_autostart(True)
 
+    maybe_fix_saved_url(config)
+    config["url"] = normalize_base_url(str(config["url"]))
+
     app = PlayerApp(config)
     start_url = player_url(str(config["url"]), str(config.get("password", "")))
+
+    configure_webview2_for_http(str(config["url"]))
+    # Selbstsignierte Zertifikate (Reverse-Proxy) tolerieren; muss vor create_window gesetzt werden.
+    webview.settings["IGNORE_SSL_ERRORS"] = True
 
     app.window = webview.create_window(
         WINDOW_TITLE,

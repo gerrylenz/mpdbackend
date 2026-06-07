@@ -292,26 +292,111 @@ def display_playlist_filename(name: str) -> str:
     return f"{name}.m3u"
 
 
-def resolve_active_playlist_name(
-    status: dict, loaded_playlist: str, available: list[str]
-) -> str:
-    """Aktive Playlist: zuerst per MQTT gesetzt, sonst MPD lastloadedplaylist."""
-    if loaded_playlist:
-        return display_playlist_filename(loaded_playlist)
+def find_playlist_in_available(name: str, available: list[str]) -> str:
+    """Findet den exakten Eintrag aus available (Groß/Kleinschreibung, mit/ohne .m3u)."""
+    if not name or not available:
+        return ""
+    if name in available:
+        return name
+    target = _normalize_playlist_label(name).lower()
+    if not target:
+        return ""
+    for item in available:
+        if _normalize_playlist_label(item).lower() == target:
+            return item
+    return ""
 
-    mpd_raw = parse_status_lastloadedplaylist(status)
-    if not mpd_raw:
+
+def _normalize_playlist_label(name: str) -> str:
+    name = (name or "").strip()
+    if name.endswith(".m3u"):
+        return name[:-4]
+    return name
+
+
+def _current_file_in_playlist_m3u(playlist_path: str, current_file: str) -> bool:
+    current_norm = current_file.replace("\\", "/")
+    current_base = os.path.basename(current_norm)
+    try:
+        with open(playlist_path, encoding="utf-8", errors="replace") as handle:
+            for raw_line in handle:
+                line = raw_line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                entry = line.replace("\\", "/")
+                if entry.startswith("file://"):
+                    entry = entry[7:]
+                entry_norm = os.path.normpath(entry).replace("\\", "/")
+                if entry_norm == current_norm:
+                    return True
+                if current_norm.endswith("/" + entry_norm) or entry_norm.endswith(
+                    "/" + current_norm
+                ):
+                    return True
+                if current_base and os.path.basename(entry_norm) == current_base:
+                    return True
+    except OSError:
+        return False
+    return False
+
+
+def infer_active_playlist_name(mpd, current_file: str, available: list[str]) -> str:
+    """Ermittelt die gespeicherte Playlist anhand des aktuellen MPD-Tracks."""
+    current_file = (current_file or "").strip()
+    if not current_file or not available:
         return ""
 
-    display = display_playlist_filename(mpd_raw)
-    if display in available:
-        return display
+    playlist_dir = mpd._playlist_directory()
+    if playlist_dir:
+        for name in available:
+            path = os.path.join(playlist_dir, name)
+            if os.path.isfile(path) and _current_file_in_playlist_m3u(path, current_file):
+                return name
 
-    base = MPD.normalize_playlist_name(display)
-    for item in available:
-        if MPD.normalize_playlist_name(item) == base:
-            return item
-    return display
+    for name in available:
+        mpd_name = mpd.normalize_playlist_name(name)
+        entries = mpd.safe("listplaylist", mpd_name, default=[]) or []
+        for entry in entries:
+            entry_file = (entry.get("file") or "").strip()
+            if entry_file == current_file:
+                return name
+            if entry_file.replace("\\", "/") == current_file.replace("\\", "/"):
+                return name
+    return ""
+
+
+def resolve_active_playlist_name(
+    status: dict,
+    loaded_playlist: str,
+    available: list[str],
+    *,
+    mpd=None,
+    current_file: str = "",
+) -> str:
+    """Aktive Playlist: MQTT/HTTP, MPD lastloadedplaylist, sonst Track in .m3u finden."""
+    if loaded_playlist:
+        display = display_playlist_filename(loaded_playlist)
+        match = find_playlist_in_available(display, available)
+        if match:
+            return match
+        if display:
+            return display
+
+    mpd_raw = parse_status_lastloadedplaylist(status)
+    if mpd_raw:
+        display = display_playlist_filename(mpd_raw)
+        match = find_playlist_in_available(display, available)
+        if match:
+            return match
+        if display:
+            return display
+
+    if mpd and current_file:
+        inferred = infer_active_playlist_name(mpd, current_file, available)
+        if inferred:
+            return inferred
+
+    return ""
 
 
 def build_mpd_status_data(status: dict) -> dict:
@@ -650,7 +735,11 @@ class Worker(threading.Thread):
         available = self.mpd.available_playlists()
         payload = {
             "playlist": resolve_active_playlist_name(
-                status, loaded_playlist, available
+                status,
+                loaded_playlist,
+                available,
+                mpd=self.mpd,
+                current_file=song.get("file") or "",
             ),
             "pos": int(song_pos) if song_pos is not None else None,
             "file": song.get("file") or "",

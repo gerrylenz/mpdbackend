@@ -1,4 +1,4 @@
-"""Windows-Hilfsfunktionen: Icon, Autostart."""
+"""Windows-Hilfsfunktionen: Icon, Autostart, WebView2."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import os
 import sys
 import winreg
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from PIL import Image, ImageDraw
 
@@ -76,3 +77,36 @@ def set_autostart(enabled: bool) -> None:
                 winreg.DeleteValue(key, APP_REG_NAME)
             except OSError:
                 pass
+
+
+def configure_webview2_for_http(base_url: str) -> None:
+    """
+    Edge/WebView2 versucht HTTP oft automatisch auf HTTPS hochzustufen.
+    mpdbackend spricht nur HTTP — ohne diese Flags erscheint kurz die
+    SSL-Fehlerseite, danach lädt die Seite erst nach manuellem Wegklicken.
+    """
+    parts = urlsplit(base_url.strip())
+    if (parts.scheme or "http").lower() != "http" or not parts.netloc:
+        return
+
+    origin = f"http://{parts.netloc}"
+    host = (parts.hostname or "").lower()
+    origins = [origin]
+    port_suffix = f":{parts.port}" if parts.port else ""
+    if host == "127.0.0.1":
+        origins.append(f"http://localhost{port_suffix}")
+    elif host == "localhost":
+        origins.append(f"http://127.0.0.1{port_suffix}")
+
+    allowlist = ",".join(dict.fromkeys(origins))
+    flags = " ".join(
+        [
+            "--https-upgrades-enabled=false",
+            "--disable-features=HttpsUpgrades,HttpsFirstBalancedModeAutoEnable",
+            f"--unsafely-treat-insecure-origin-as-secure={allowlist}",
+        ]
+    )
+    existing = os.environ.get("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "").strip()
+    os.environ["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = (
+        f"{existing} {flags}".strip() if existing else flags
+    )
