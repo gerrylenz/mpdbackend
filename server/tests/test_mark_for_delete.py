@@ -44,3 +44,17 @@ def test_save_current_track_file_skips_duplicate_consecutive(tmp_path):
 
     assert written == "Artist/Album/track.mp3"
     assert cfg.read_text(encoding="utf-8") == "Artist/Album/track.mp3\n"
+
+
+def test_save_current_track_file_skips_duplicate_non_consecutive(tmp_path):
+    cfg = tmp_path / "mark_for_delete.cfg"
+    cfg.write_text(
+        "Artist/Album/track.mp3\nArtist/Other/other.mp3\n", encoding="utf-8"
+    )
+    song = {"file": "Artist/Album/track.mp3"}
+
+    backend.save_current_track_file(song, str(cfg))
+
+    assert cfg.read_text(encoding="utf-8") == (
+        "Artist/Album/track.mp3\nArtist/Other/other.mp3\n"
+    )

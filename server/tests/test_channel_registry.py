@@ -34,3 +34,35 @@ def test_channel_registry_reloads_changed_file(tmp_path, monkeypatch) -> None:
         encoding="utf-8",
     )
     assert registry.get()["0"]["name"] == "B"
+
+
+def test_channel_registry_clears_on_empty_file(tmp_path, monkeypatch) -> None:
+    module = _load_mpdbackend_module()
+    channels_file = tmp_path / "channels.json"
+    channels_file.write_text(
+        json.dumps({"0": {"name": "A", "stream_url": "http://a", "content_type": "mp3"}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MPDBACKEND_CHANNELS_FILE", str(channels_file))
+
+    registry = module.ChannelRegistry()
+    assert registry.get()["0"]["name"] == "A"
+
+    channels_file.write_text("{}", encoding="utf-8")
+    assert registry.get() == {}
+
+
+def test_channel_registry_keeps_stale_on_parse_error(tmp_path, monkeypatch) -> None:
+    module = _load_mpdbackend_module()
+    channels_file = tmp_path / "channels.json"
+    channels_file.write_text(
+        json.dumps({"0": {"name": "A", "stream_url": "http://a", "content_type": "mp3"}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MPDBACKEND_CHANNELS_FILE", str(channels_file))
+
+    registry = module.ChannelRegistry()
+    assert registry.get()["0"]["name"] == "A"
+
+    channels_file.write_text("{ invalid json", encoding="utf-8")
+    assert registry.get()["0"]["name"] == "A"

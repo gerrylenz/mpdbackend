@@ -54,7 +54,7 @@ require_command() {
 
 validate_source_dir() {
     local missing=0
-    for file in mpdbackend.py mpdbackend_mqtt.py mpdbackend_http.py mpdbackend_cover.py example/channels.json.example example/channels.json.example.multi systemd/mpdbackend.service systemd/mpdbackend.env.example install/install.sh install/requirements.txt web/index.html web/style.css web/app.js tools/delete_marked_files.py tools/delete_marked_files.env.example; do
+    for file in mpdbackend.py mpdbackend_mqtt.py mpdbackend_http.py mpdbackend_cover.py env_util.py paths.py marked_file.py example/channels.json.example example/channels.json.example.multi systemd/mpdbackend.service systemd/mpdbackend.env.example install/install.sh install/requirements.txt web/index.html web/style.css web/app.js tools/delete_marked_files.py tools/delete_marked_files.env.example; do
         if [[ ! -f "${SOURCE_DIR}/${file}" ]]; then
             echo "Missing in source directory (${SOURCE_DIR}): ${file}" >&2
             missing=1
@@ -81,6 +81,9 @@ copy_server_files() {
         install -m 644 "${SOURCE_DIR}/mpdbackend_mqtt.py" "${INSTALL_DIR}/"
         install -m 644 "${SOURCE_DIR}/mpdbackend_http.py" "${INSTALL_DIR}/"
         install -m 644 "${SOURCE_DIR}/mpdbackend_cover.py" "${INSTALL_DIR}/"
+        install -m 644 "${SOURCE_DIR}/env_util.py" "${INSTALL_DIR}/"
+        install -m 644 "${SOURCE_DIR}/paths.py" "${INSTALL_DIR}/"
+        install -m 644 "${SOURCE_DIR}/marked_file.py" "${INSTALL_DIR}/"
         install -m 644 "${SOURCE_DIR}/web/index.html" "${INSTALL_DIR}/web/"
         install -m 644 "${SOURCE_DIR}/web/style.css" "${INSTALL_DIR}/web/"
         install -m 644 "${SOURCE_DIR}/web/app.js" "${INSTALL_DIR}/web/"
