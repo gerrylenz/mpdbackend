@@ -26,7 +26,14 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-SCRIPT_DIR = Path(__file__).resolve().parent
+_SCRIPT_DIR = Path(__file__).resolve().parent
+if str(_SCRIPT_DIR.parent) not in sys.path:
+    sys.path.insert(0, str(_SCRIPT_DIR.parent))
+
+from env_util import parse_env_file  # noqa: E402
+from paths import resolve_under_root  # noqa: E402
+
+SCRIPT_DIR = _SCRIPT_DIR
 DEFAULT_CONFIG_NAME = "delete_marked_files.env"
 
 _BUILTIN_DEFAULTS = {
@@ -54,19 +61,9 @@ def log(message: str) -> None:
     print(f"{ts} {message}", flush=True)
 
 
-def parse_env_file(path: Path) -> dict[str, str]:
-    """Liest KEY=VALUE-Zeilen aus einer Env-Datei."""
-    values: dict[str, str] = {}
-    with path.open(encoding="utf-8") as handle:
-        for raw_line in handle:
-            line = raw_line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, _, value = line.partition("=")
-            key = key.strip()
-            if key:
-                values[key] = value.strip()
-    return values
+def parse_env_file_lines(path: Path) -> dict[str, str]:
+    """Alias für env_util.parse_env_file."""
+    return parse_env_file(path)
 
 
 def normalize_config(raw: dict[str, str]) -> dict[str, str]:
@@ -114,7 +111,7 @@ def load_config(explicit: str | None) -> tuple[dict[str, str], Path | None]:
         raise FileNotFoundError(f"Konfigurationsdatei nicht gefunden: {path}")
 
     merged = dict(_BUILTIN_DEFAULTS)
-    merged.update(normalize_config(parse_env_file(path)))
+    merged.update(normalize_config(parse_env_file_lines(path)))
     return merged, path
 
 
@@ -216,24 +213,6 @@ def cover_cache_filename(audio_file: Path) -> str:
     key = f"{audio_file}:{stat.st_size}:{stat.st_mtime_ns}"
     digest = hashlib.sha256(key.encode()).hexdigest()[:24]
     return f"cover_{digest}.jpg"
-
-
-def resolve_under_root(music_root: Path, rel_path: str) -> Path | None:
-    """Baut absoluten Pfad; None wenn außerhalb der Wurzel oder ungültig."""
-    rel = rel_path.strip().replace("\\", "/")
-    if not rel or rel.startswith("/"):
-        return None
-    parts = Path(rel).parts
-    if ".." in parts:
-        return None
-
-    root = music_root.resolve()
-    target = (root / rel).resolve()
-    try:
-        target.relative_to(root)
-    except ValueError:
-        return None
-    return target
 
 
 def remove_cover_cache(cover_dir: Path, audio_file: Path, *, dry_run: bool) -> None:

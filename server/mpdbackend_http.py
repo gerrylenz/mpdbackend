@@ -100,6 +100,7 @@ class HTTPAPI:
         self.channel_registry = channel_registry
         self.mqtt_enabled = mqtt_enabled
         self.loaded_playlist = ""
+        self._http_server: ThreadingHTTPServer | None = None
 
     def _resolve_loaded_playlist(self) -> str:
         """Aktive Playlist aus HTTP- oder MQTT-Kontext."""
@@ -348,10 +349,10 @@ class HTTPAPI:
                 return
 
         port = http_port()
-        server = ThreadingHTTPServer((HTTP_HOST, port), Handler)
-        server.worker = self.worker
+        self._http_server = ThreadingHTTPServer((HTTP_HOST, port), Handler)
+        self._http_server.worker = self.worker
 
-        threading.Thread(target=server.serve_forever, daemon=True).start()
+        threading.Thread(target=self._http_server.serve_forever, daemon=True).start()
         if os.path.isdir(WEB_DIR):
             if web_auth_enabled():
                 logger.info(
@@ -363,6 +364,13 @@ class HTTPAPI:
             else:
                 logger.info("Web UI at http://%s:%s/", HTTP_HOST, port)
         logger.info("HTTP listening on %s:%s", HTTP_HOST, port)
+
+    def stop(self) -> None:
+        """Beendet den HTTP-Server (Graceful Shutdown)."""
+        if self._http_server is not None:
+            self._http_server.shutdown()
+            self._http_server.server_close()
+            self._http_server = None
 
     @staticmethod
     def _read_body(req) -> bytes:
@@ -486,7 +494,7 @@ class HTTPAPI:
 
     def handle_markfordelete(self, req):
         """GET /markfordelete – Inhalt von mark_for_delete.cfg als JSON."""
-        from mpdbackend import MARKED_FOR_DELETE, load_marked_for_delete_entries
+        from mpdbackend import get_marked_for_delete, load_marked_for_delete_entries
 
         parsed = urlparse(req.path)
         query = dict(parse_qsl(parsed.query))
@@ -498,7 +506,7 @@ class HTTPAPI:
             return
 
         payload = {
-            "path": os.path.abspath(MARKED_FOR_DELETE),
+            "path": os.path.abspath(get_marked_for_delete()),
             "files": load_marked_for_delete_entries(),
         }
         self._send_json(req, 200, payload)
@@ -753,7 +761,7 @@ class HTTPAPI:
 
     def handle_cmd_savefile(self, req) -> None:
         """POST /cmd/savefile – aktuellen MPD-Dateipfad an Textdatei anhängen."""
-        from mpdbackend import MARKED_FOR_DELETE, save_current_track_file
+        from mpdbackend import get_marked_for_delete, save_current_track_file
 
         if self._try_proxy_cmd_post(req, "/cmd/savefile"):
             return
@@ -778,6 +786,6 @@ class HTTPAPI:
             {
                 "ok": True,
                 "file": track_file,
-                "path": os.path.abspath(MARKED_FOR_DELETE),
+                "path": os.path.abspath(get_marked_for_delete()),
             },
         )

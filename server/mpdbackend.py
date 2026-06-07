@@ -3,15 +3,20 @@
 
 import json
 import re
+import signal
+import sys
 import time
 import logging
 import threading
 import os
 import hashlib
-from pathlib import Path
 from urllib.parse import quote
 
 from mpd import MPDClient
+
+from env_util import env_bool, load_env_file as _load_env_file
+from marked_file import append_marked_line, clear_marked_file, read_marked_lines
+from paths import build_full_path
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_DATA_DIR = os.path.join(BASE_DIR, "data")
@@ -19,62 +24,47 @@ DEFAULT_ENV_FILE = os.path.join(BASE_DIR, "mpdbackend.env")
 
 
 def load_env_file() -> None:
-    """
-    Lädt Variablen aus einer Env-Datei.
-
-    Mit MPDBACKEND_ENV_FILE: Werte aus dieser Datei (für Multi-Instanz).
-    Ohne: Standard mpdbackend.env neben mpdbackend.py — bereits gesetzte
-    Umgebungsvariablen (z. B. systemd EnvironmentFile) werden nicht überschrieben.
-    """
-    explicit = os.getenv("MPDBACKEND_ENV_FILE", "").strip()
-    env_path = explicit or DEFAULT_ENV_FILE
-    if not os.path.isfile(env_path):
-        return
-
-    with open(env_path, encoding="utf-8") as handle:
-        for raw_line in handle:
-            line = raw_line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, _, value = line.partition("=")
-            key = key.strip()
-            if not key:
-                continue
-            if explicit or key not in os.environ:
-                os.environ[key] = value.strip()
+    """Lädt mpdbackend.env (siehe env_util.load_env_file)."""
+    _load_env_file(DEFAULT_ENV_FILE)
 
 
-def env_bool(name: str, default: bool = False) -> bool:
-    """Wandelt eine Umgebungsvariable in einen bool-Wert um (true/1/yes/on)."""
-    raw = os.getenv(name, "").strip().lower()
-    if not raw:
-        return default
-    return raw in ("1", "true", "yes", "on")
+def get_mqtt_enabled() -> bool:
+    return env_bool("MPDBACKEND_MQTT_ENABLED", False)
+
+
+def get_music_root() -> str:
+    return os.getenv("MPDBACKEND_MUSIC_ROOT", "/home/musik")
+
+
+def get_marked_for_delete() -> str:
+    return os.getenv(
+        "MPDBACKEND_MARKED_FOR_DELETE",
+        os.path.join(DEFAULT_DATA_DIR, "mark_for_delete.cfg"),
+    )
+
+
+def get_station_logo_dir() -> str:
+    return os.getenv(
+        "MPDBACKEND_STATION_LOGO_DIR", os.path.join(DEFAULT_DATA_DIR, "logos")
+    )
+
+
+def get_mpd_socket() -> str:
+    return os.getenv("MPDBACKEND_MPD_SOCKET", "/run/mpd/socket")
+
+
+def get_playlist_dir() -> str:
+    return os.getenv("MPDBACKEND_PLAYLIST_DIR", "").strip()
+
+
+def get_public_base_url() -> str:
+    return os.getenv("MPDBACKEND_PUBLIC_BASE_URL", "")
 
 
 load_env_file()
 
 from mpdbackend_cover import COVER_NAME_RE, CoverService  # noqa: E402
 
-
-# =========================
-# CONFIG
-# =========================
-
-MQTT_ENABLED = env_bool("MPDBACKEND_MQTT_ENABLED", False)
-
-MUSIC_ROOT = os.getenv("MPDBACKEND_MUSIC_ROOT", "/home/musik")
-MARKED_FOR_DELETE = os.getenv(
-    "MPDBACKEND_MARKED_FOR_DELETE",
-    os.path.join(DEFAULT_DATA_DIR, "mark_for_delete.cfg"),
-)
-STATION_LOGO_DIR = os.getenv(
-    "MPDBACKEND_STATION_LOGO_DIR", os.path.join(DEFAULT_DATA_DIR, "logos")
-)
-
-MPD_SOCKET = os.getenv("MPDBACKEND_MPD_SOCKET", "/run/mpd/socket")
-PLAYLIST_DIR = os.getenv("MPDBACKEND_PLAYLIST_DIR", "").strip()
-PUBLIC_BASE_URL = os.getenv("MPDBACKEND_PUBLIC_BASE_URL", "")
 
 logger = logging.getLogger("mpdbackend")
 
@@ -91,9 +81,9 @@ class ChannelRegistry:
         self._lock = threading.Lock()
         self._channels_file = os.getenv("MPDBACKEND_CHANNELS_FILE", DEFAULT_CHANNELS_FILE).strip()
         self._mtime: float | None = None
-        self._channels = self._read_channels()
+        self._channels = self._read_channels() or {}
 
-    def _read_channels(self) -> dict:
+    def _read_channels(self) -> dict | None:
         """Liest die Sender aus der konfigurierten JSON-Datei."""
         if not self._channels_file or not os.path.isfile(self._channels_file):
             logger.warning(
@@ -105,14 +95,19 @@ class ChannelRegistry:
         try:
             with open(self._channels_file, encoding="utf-8") as handle:
                 data = json.load(handle)
-            if isinstance(data, dict):
-                self._mtime = os.path.getmtime(self._channels_file)
-                logger.info("Loaded %s radio channel(s) from %s", len(data), self._channels_file)
-                return data
+            if not isinstance(data, dict):
+                logger.warning(
+                    "Channels file is not a JSON object: %s", self._channels_file
+                )
+                return None
+            self._mtime = os.path.getmtime(self._channels_file)
+            logger.info(
+                "Loaded %s radio channel(s) from %s", len(data), self._channels_file
+            )
+            return data
         except Exception as err:
             logger.warning("Failed to load channels from %s: %s", self._channels_file, err)
-        self._mtime = None
-        return {}
+        return None
 
     def _maybe_reload(self) -> None:
         """Lädt channels.json neu, wenn die Datei geändert wurde."""
@@ -122,15 +117,18 @@ class ChannelRegistry:
         if self._mtime is not None and mtime <= self._mtime:
             return
         channels = self._read_channels()
-        if channels:
-            self._channels = channels
-            logger.info("Reloaded %s radio channel(s) from %s", len(channels), self._channels_file)
+        if channels is None:
+            return
+        self._channels = channels
+        logger.info(
+            "Reloaded %s radio channel(s) from %s", len(channels), self._channels_file
+        )
 
     def get(self) -> dict:
-        """Gibt die aktuelle Senderliste zurück."""
+        """Gibt eine Kopie der aktuellen Senderliste zurück."""
         with self._lock:
             self._maybe_reload()
-            return self._channels
+            return dict(self._channels)
 
 
 CHANNEL_REGISTRY = ChannelRegistry()
@@ -140,65 +138,34 @@ CHANNEL_REGISTRY = ChannelRegistry()
 # HELPERS
 # =========================
 
-def build_full_path(rel_path):
-    """Baut den absoluten Pfad zur Audiodatei unter MUSIC_ROOT."""
-    return os.path.join(MUSIC_ROOT, rel_path)
-
-
 def save_current_track_file(song: dict, output_path: str | None = None) -> str:
     """Hängt den MPD-Dateipfad des aktuellen Titels an eine Textdatei an."""
     track_file = (song.get("file") or "").strip()
     if not track_file:
         raise ValueError("no current track file")
 
-    target = (output_path or MARKED_FOR_DELETE).strip()
+    target = (output_path or get_marked_for_delete()).strip()
     if not target:
         raise ValueError("output path not configured")
 
-    target_abs = os.path.abspath(target)
-    parent = os.path.dirname(target_abs)
-    if parent:
-        os.makedirs(parent, exist_ok=True)
-
-    if os.path.isfile(target_abs):
-        with open(target_abs, encoding="utf-8") as handle:
-            lines = [line.strip() for line in handle if line.strip()]
-        if lines and lines[-1] == track_file:
-            return track_file
-
-    with open(target_abs, "a", encoding="utf-8") as handle:
-        handle.write(track_file)
-        handle.write("\n")
-
+    append_marked_line(target, track_file)
     return track_file
 
 
 def load_marked_for_delete_entries(output_path: str | None = None) -> list[str]:
     """Liest mark_for_delete.cfg: eine MPD-Dateipfad-Zeile pro Eintrag."""
-    target = (output_path or MARKED_FOR_DELETE).strip()
+    target = (output_path or get_marked_for_delete()).strip()
     if not target:
         return []
-
-    target_abs = os.path.abspath(target)
-    if not os.path.isfile(target_abs):
-        return []
-
-    with open(target_abs, encoding="utf-8") as handle:
-        return [line.strip() for line in handle if line.strip()]
+    return read_marked_lines(target)
 
 
 def clear_marked_for_delete_file(output_path: str | None = None) -> str:
     """Leert mark_for_delete.cfg; liefert den absoluten Pfad."""
-    target = (output_path or MARKED_FOR_DELETE).strip()
+    target = (output_path or get_marked_for_delete()).strip()
     if not target:
         raise ValueError("output path not configured")
-
-    target_abs = os.path.abspath(target)
-    parent = os.path.dirname(target_abs)
-    if parent:
-        os.makedirs(parent, exist_ok=True)
-    Path(target_abs).write_text("", encoding="utf-8")
-    return target_abs
+    return clear_marked_file(target)
 
 
 def channel_logo_basename(channel_id: str) -> str:
@@ -211,15 +178,16 @@ def resolve_station_logo_path(channel_id: str) -> tuple[str, str] | None:
     if not channel_id or not CHANNEL_ID_RE.match(channel_id):
         return None
 
-    os.makedirs(STATION_LOGO_DIR, exist_ok=True)
+    os.makedirs(get_station_logo_dir(), exist_ok=True)
     basename = channel_logo_basename(channel_id)
+    logo_dir = get_station_logo_dir()
 
-    exact = os.path.join(STATION_LOGO_DIR, basename)
+    exact = os.path.join(logo_dir, basename)
     if os.path.isfile(exact):
         return exact, logo_content_type(exact)
 
     for ext in STATION_LOGO_EXTENSIONS:
-        candidate = os.path.join(STATION_LOGO_DIR, f"{basename}{ext}")
+        candidate = os.path.join(logo_dir, f"{basename}{ext}")
         if os.path.isfile(candidate):
             return candidate, logo_content_type(candidate)
 
@@ -308,7 +276,7 @@ def public_cover_url(cover_name: str) -> str | None:
     if not name or not COVER_NAME_RE.match(name):
         return None
     path = f"/cover?name={quote(name)}"
-    base = (PUBLIC_BASE_URL or "").strip().rstrip("/")
+    base = (get_public_base_url() or "").strip().rstrip("/")
     if not base:
         return None
     return f"{base}{path}"
@@ -377,7 +345,7 @@ class MPD:
     def _new_client(self) -> MPDClient:
         client = MPDClient()
         client.timeout = 5
-        client.connect(MPD_SOCKET)
+        client.connect(get_mpd_socket())
         return client
 
     def connect(self) -> bool:
@@ -386,7 +354,8 @@ class MPD:
             self.client = self._new_client()
             self.command_client = self._new_client()
             return True
-        except Exception:
+        except Exception as err:
+            logger.warning("MPD connect failed (%s): %s", get_mpd_socket(), err)
             self.client = None
             self.command_client = None
             return False
@@ -396,7 +365,8 @@ class MPD:
         try:
             self.client = self._new_client()
             return True
-        except Exception:
+        except Exception as err:
+            logger.warning("MPD idle connect failed (%s): %s", get_mpd_socket(), err)
             self.client = None
             return False
 
@@ -405,7 +375,10 @@ class MPD:
         try:
             self.command_client = self._new_client()
             return True
-        except Exception:
+        except Exception as err:
+            logger.warning(
+                "MPD command connect failed (%s): %s", get_mpd_socket(), err
+            )
             self.command_client = None
             return False
 
@@ -511,8 +484,9 @@ class MPD:
 
     def _playlist_directory(self) -> str:
         """Ermittelt das MPD-Playlist-Verzeichnis (Env oder MPD config)."""
-        if PLAYLIST_DIR and os.path.isdir(PLAYLIST_DIR):
-            return PLAYLIST_DIR
+        playlist_dir = get_playlist_dir()
+        if playlist_dir and os.path.isdir(playlist_dir):
+            return playlist_dir
 
         config = self.safe("config", default={})
         if isinstance(config, dict):
@@ -566,6 +540,11 @@ class MPD:
         self._playlists_dir_mtime = dir_mtime
         self._playlists_cache = playlists
         return playlists
+
+    def invalidate_playlists_cache(self) -> None:
+        """Leert den Playlist-Cache (z. B. nach MPD playlist-Event)."""
+        self._playlists_cache = None
+        self._playlists_dir_mtime = None
 
 
 # =========================
@@ -697,18 +676,24 @@ class Worker(threading.Thread):
         """Bei Trackwechsel Cover neu generieren; True wenn gewechselt."""
         sig = (song.get("file"), status.get("songid"))
 
-        if sig == self.last_signature:
-            return False
+        with self.lock:
+            if sig == self.last_signature:
+                return False
+            self.last_signature = sig
 
         file = song.get("file")
         if file:
-            try:
-                self.cover.generate(build_full_path(file))
-            except Exception as err:
-                logger.warning("Cover generation failed for %s: %s", file, err)
+            full_path = build_full_path(file, get_music_root())
+            if not full_path:
+                logger.warning("Invalid track path from MPD: %s", file)
                 self.cover.current = "blank.jpg"
+            else:
+                try:
+                    self.cover.generate(full_path)
+                except Exception as err:
+                    logger.warning("Cover generation failed for %s: %s", file, err)
+                    self.cover.current = "blank.jpg"
 
-        self.last_signature = sig
         return True
 
     def publish(self, song, status):
@@ -730,7 +715,7 @@ class Worker(threading.Thread):
             self.current_hash = new_hash
 
         if self.mqtt_publisher:
-            self.mqtt_publisher.publish(song, status, payload, MUSIC_ROOT)
+            self.mqtt_publisher.publish(song, status, payload, get_music_root())
 
     def update_state(self):
         """Liest MPD-Status und aktualisiert last_song/last_status."""
@@ -761,7 +746,9 @@ class Worker(threading.Thread):
                 if not self.mpd.client and not self.mpd.connect_idle():
                     time.sleep(2)
                     continue
-                self.mpd.idle()
+                events = self.mpd.idle()
+                if events and "playlist" in events:
+                    self.mpd.invalidate_playlists_cache()
 
                 song, status = self.update_state()
                 self.publish(song, status)
@@ -774,6 +761,28 @@ class Worker(threading.Thread):
 # =========================
 # MAIN
 # =========================
+
+_shutdown_done = False
+
+
+def _shutdown(signum, _frame, *, worker: Worker, http_api, publisher) -> None:
+    """Graceful shutdown für systemd SIGTERM/SIGINT."""
+    global _shutdown_done
+    if _shutdown_done:
+        return
+    _shutdown_done = True
+
+    logger.info("Shutting down (signal %s)", signum)
+    worker.stop_flag = True
+
+    if publisher is not None:
+        publisher.stop()
+
+    if http_api is not None:
+        http_api.stop()
+
+    sys.exit(0)
+
 
 def main():
     """Startet MPD-Worker, optional MQTT und HTTP-API."""
@@ -790,8 +799,9 @@ def main():
 
     mpd = MPD()
     worker = Worker(mpd)
+    publisher = None
 
-    if MQTT_ENABLED:
+    if get_mqtt_enabled():
         from mpdbackend_mqtt import MqttPublisher
 
         publisher = MqttPublisher(worker)
@@ -804,10 +814,24 @@ def main():
 
     from mpdbackend_http import HTTPAPI
 
-    HTTPAPI(worker, CHANNEL_REGISTRY, mqtt_enabled=MQTT_ENABLED).start()
+    http_api = HTTPAPI(worker, CHANNEL_REGISTRY, mqtt_enabled=get_mqtt_enabled())
+    http_api.start()
 
-    while True:
-        time.sleep(10)
+    signal.signal(
+        signal.SIGTERM,
+        lambda signum, frame: _shutdown(
+            signum, frame, worker=worker, http_api=http_api, publisher=publisher
+        ),
+    )
+    signal.signal(
+        signal.SIGINT,
+        lambda signum, frame: _shutdown(
+            signum, frame, worker=worker, http_api=http_api, publisher=publisher
+        ),
+    )
+
+    while not worker.stop_flag:
+        time.sleep(1)
 
 
 if __name__ == "__main__":

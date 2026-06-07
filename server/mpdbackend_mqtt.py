@@ -373,3 +373,14 @@ class MqttPublisher:
 
         self.publish_playlists()
         self.publish_current_cover(song.get("file"), music_root)
+
+    def stop(self) -> None:
+        """Trennt MQTT und stoppt Hintergrund-Threads."""
+        if self.client:
+            try:
+                self.client.publish(TOPIC_CONNECTED, "offline", retain=True, qos=1)
+                self.client.disconnect()
+                self.client.loop_stop()
+            except Exception as err:
+                logger.warning("MQTT disconnect failed: %s", err)
+            self.client = None
