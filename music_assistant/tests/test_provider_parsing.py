@@ -120,3 +120,13 @@ def test_cover_fetch_url_uses_channel_backend(provider: MPDBackendRadioProvider)
         provider._cover_fetch_url("1", cover_name)
         == f"http://home.example:4534/cover?name={cover_name}"
     )
+
+
+def test_playlist_changed_detects_mpd_playlist_switch(
+    provider: MPDBackendRadioProvider,
+) -> None:
+    """Playlist changes on MPD should be detected between metadata polls."""
+    provider._last_playlists["0"] = "Pop.m3u"
+    assert provider._playlist_changed("0", {"playlist": "Rock.m3u"}) is True
+    assert provider._last_playlists["0"] == "Rock.m3u"
+    assert provider._playlist_changed("0", {"playlist": "Rock.m3u"}) is False

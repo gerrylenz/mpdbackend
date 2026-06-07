@@ -13,3 +13,6 @@ server/install/mpd.conf
 github_token
 *:Zone.Identifier
 *.log
+server/windows_app/build/
+server/windows_app/dist/
+server/windows_app/*.spec
