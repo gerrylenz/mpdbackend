@@ -72,6 +72,47 @@ function stripM3u(name) {
   return String(name || "").replace(/\.m3u$/i, "");
 }
 
+function normalizePlaylistName(name) {
+  return stripM3u(String(name || "").trim()).toLowerCase();
+}
+
+/** Findet exakten oder normalisierten Playlist-Namen in der MPD-Liste. */
+function findPlaylistInList(name, playlists) {
+  if (!name || !playlists.length) {
+    return "";
+  }
+  if (playlists.includes(name)) {
+    return name;
+  }
+  const base = normalizePlaylistName(name);
+  if (!base) {
+    return "";
+  }
+  for (const item of playlists) {
+    if (normalizePlaylistName(item) === base) {
+      return item;
+    }
+  }
+  return "";
+}
+
+function resolveActivePlaylist(playlists, activeFromApi) {
+  const candidates = [
+    activeFromApi,
+    state.activePlaylist,
+    state.lastNowPlaying?.playlist,
+    els.playlistSelect?.value,
+  ].filter(Boolean);
+
+  for (const candidate of candidates) {
+    const match = findPlaylistInList(candidate, playlists);
+    if (match) {
+      return match;
+    }
+  }
+  return "";
+}
+
 function passwordFromUrl() {
   return new URLSearchParams(window.location.search).get("password") || "";
 }
@@ -408,7 +449,7 @@ function updateCover(coverName) {
 }
 
 function renderPlaylistOptions(playlists, active) {
-  const previous = els.playlistSelect.value;
+  const previous = state.activePlaylist || els.playlistSelect?.value || "";
   els.playlistSelect.innerHTML = "";
 
   if (!playlists.length) {
@@ -417,25 +458,37 @@ function renderPlaylistOptions(playlists, active) {
     option.textContent = "Keine Playlists";
     els.playlistSelect.appendChild(option);
     els.playlistSelect.disabled = true;
+    state.activePlaylist = "";
     return;
   }
 
   els.playlistSelect.disabled = false;
+  const target = resolveActivePlaylist(playlists, active || previous);
+
+  if (!target) {
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = "Playlist wählen…";
+    placeholder.selected = true;
+    els.playlistSelect.appendChild(placeholder);
+  }
+
   for (const name of playlists) {
     const option = document.createElement("option");
     option.value = name;
     option.textContent = stripM3u(name);
+    if (name === target) {
+      option.selected = true;
+    }
     els.playlistSelect.appendChild(option);
   }
 
-  const target = active && playlists.includes(active)
-    ? active
-    : previous && playlists.includes(previous)
-      ? previous
-      : playlists[0];
-
-  els.playlistSelect.value = target;
-  state.activePlaylist = target;
+  if (target) {
+    els.playlistSelect.value = target;
+    state.activePlaylist = target;
+  } else {
+    state.activePlaylist = "";
+  }
 }
 
 function syncPlaylistSelect(active) {
@@ -443,9 +496,14 @@ function syncPlaylistSelect(active) {
     return;
   }
 
-  state.activePlaylist = active;
-  if (state.playlists.includes(active) && els.playlistSelect.value !== active) {
-    els.playlistSelect.value = active;
+  const match = findPlaylistInList(active, state.playlists);
+  if (!match) {
+    return;
+  }
+
+  state.activePlaylist = match;
+  if (els.playlistSelect.value !== match) {
+    els.playlistSelect.value = match;
   }
 }
 
@@ -549,7 +607,13 @@ async function loadPlaylists() {
   const path = withChannelQuery("/playlists", state.activeChannel);
   const data = await fetchJson(path);
   state.playlists = Array.isArray(data.playlists) ? data.playlists : [];
-  renderPlaylistOptions(state.playlists, data.active || "");
+  const active =
+    data.active ||
+    state.lastNowPlaying?.playlist ||
+    state.activePlaylist ||
+    els.playlistSelect?.value ||
+    "";
+  renderPlaylistOptions(state.playlists, active);
 }
 
 async function pollNowPlaying() {
@@ -577,7 +641,7 @@ els.channelSelect.addEventListener("change", async () => {
   state.lastCoverName = "";
   state.lastNowPlaying = null;
   updateChannelUi(els.channelSelect.value);
-  pollNowPlaying().catch(console.warn);
+  await pollNowPlaying().catch(console.warn);
   if (state.controlGranted) {
     await loadPlaylists().catch(console.warn);
   }
@@ -723,6 +787,8 @@ async function bootstrap() {
 
   await loadChannels();
 
+  await pollNowPlaying().catch(console.warn);
+
   if (state.controlGranted) {
     try {
       await loadPlaylists();
@@ -730,11 +796,13 @@ async function bootstrap() {
       console.warn(err);
     }
     state.playlistPollId = setInterval(() => {
+      if (state.playlistChanging) {
+        return;
+      }
       loadPlaylists().catch(console.warn);
     }, 30000);
   }
 
-  pollNowPlaying();
   pollHealth();
 }
 
