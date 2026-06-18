@@ -30,7 +30,7 @@ python mpd_player.py --url http://192.168.1.10:4533 --password geheim
 python mpd_player.py --no-tray
 ```
 
-Konfiguration: `%APPDATA%\mpdbackend-player\config.json` (Vorlage: `config.example.json`)
+Konfiguration: `config.json` im gleichen Ordner wie `MPD-Player.exe` bzw. `mpd_player.py` (Vorlage: `config.example.json`)
 
 | Option | Bedeutung |
 |--------|-----------|
@@ -52,7 +52,7 @@ WebView2 zeigt das, wenn die App per **HTTPS** verbindet, der mpdbackend-Server 
 
 **Lösung:**
 
-1. In den Einstellungen (Tray → Einstellungen) oder in `%APPDATA%\mpdbackend-player\config.json` die URL auf **`http://`** setzen, z. B.:
+1. In den Einstellungen (Tray → Einstellungen) oder in `config.json` neben der EXE die URL auf **`http://`** setzen, z. B.:
    - `http://127.0.0.1:4533` (Server auf demselben PC)
    - `http://192.168.1.10:4533` (Server im LAN)
 2. Im normalen Browser testen: dieselbe `http://`-URL muss dort laden.
