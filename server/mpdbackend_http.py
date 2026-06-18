@@ -122,6 +122,7 @@ class HTTPAPI:
     def _resolve_active_playlist(self) -> str:
         """Aktive Playlist inkl. MPD-Status und Track-Abgleich mit .m3u-Dateien."""
         from mpdbackend import (
+            find_playlist_in_available,
             parse_status_lastloadedplaylist,
             resolve_active_playlist_name,
         )
@@ -138,11 +139,11 @@ class HTTPAPI:
             current_file=song.get("file") or "",
         )
         if active:
-            if not loaded:
-                mpd_raw = parse_status_lastloadedplaylist(status)
-                self._persist_loaded_playlist(
-                    mpd_raw or self.worker.mpd.normalize_playlist_name(active)
-                )
+            loaded_match = (
+                find_playlist_in_available(loaded, available) if loaded else ""
+            )
+            if not loaded_match or loaded_match != active:
+                self._persist_loaded_playlist(active)
             return active
 
         mpd_raw = parse_status_lastloadedplaylist(status)

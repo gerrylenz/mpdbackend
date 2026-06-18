@@ -314,30 +314,51 @@ def _normalize_playlist_label(name: str) -> str:
     return name
 
 
-def _current_file_in_playlist_m3u(playlist_path: str, current_file: str) -> bool:
-    current_norm = current_file.replace("\\", "/")
+def _normalize_media_path(path: str) -> str:
+    path = (path or "").strip().replace("\\", "/")
+    if path.lower().startswith("file://"):
+        path = path[7:]
+    return path.lstrip("./")
+
+
+def _media_paths_match(entry: str, current: str) -> bool:
+    entry_norm = _normalize_media_path(entry)
+    current_norm = _normalize_media_path(current)
+    if not entry_norm or not current_norm:
+        return False
+    if entry_norm == current_norm:
+        return True
+    if entry_norm.endswith("/" + current_norm) or current_norm.endswith("/" + entry_norm):
+        return True
+    entry_base = os.path.basename(entry_norm)
     current_base = os.path.basename(current_norm)
+    return bool(entry_base and entry_base == current_base)
+
+
+def _current_file_in_playlist_m3u(playlist_path: str, current_file: str) -> bool:
+    current_norm = _normalize_media_path(current_file)
+    if not current_norm:
+        return False
     try:
         with open(playlist_path, encoding="utf-8", errors="replace") as handle:
             for raw_line in handle:
                 line = raw_line.strip()
                 if not line or line.startswith("#"):
                     continue
-                entry = line.replace("\\", "/")
-                if entry.startswith("file://"):
-                    entry = entry[7:]
-                entry_norm = os.path.normpath(entry).replace("\\", "/")
-                if entry_norm == current_norm:
-                    return True
-                if current_norm.endswith("/" + entry_norm) or entry_norm.endswith(
-                    "/" + current_norm
-                ):
-                    return True
-                if current_base and os.path.basename(entry_norm) == current_base:
+                if _media_paths_match(line, current_norm):
                     return True
     except OSError:
         return False
     return False
+
+
+def _playlist_entry_file(entry) -> str:
+    """Dateipfad aus listplaylist-Eintrag (dict oder plain string)."""
+    if isinstance(entry, dict):
+        return str(entry.get("file") or "").strip()
+    if isinstance(entry, str):
+        return entry.strip()
+    return ""
 
 
 def infer_active_playlist_name(mpd, current_file: str, available: list[str]) -> str:
@@ -357,10 +378,8 @@ def infer_active_playlist_name(mpd, current_file: str, available: list[str]) -> 
         mpd_name = mpd.normalize_playlist_name(name)
         entries = mpd.safe("listplaylist", mpd_name, default=[]) or []
         for entry in entries:
-            entry_file = (entry.get("file") or "").strip()
-            if entry_file == current_file:
-                return name
-            if entry_file.replace("\\", "/") == current_file.replace("\\", "/"):
+            entry_file = _playlist_entry_file(entry)
+            if entry_file and _media_paths_match(entry_file, current_file):
                 return name
     return ""
 
@@ -373,23 +392,19 @@ def resolve_active_playlist_name(
     mpd=None,
     current_file: str = "",
 ) -> str:
-    """Aktive Playlist: MQTT/HTTP, MPD lastloadedplaylist, sonst Track in .m3u finden."""
-    if loaded_playlist:
-        display = display_playlist_filename(loaded_playlist)
-        match = find_playlist_in_available(display, available)
-        if match:
-            return match
-        if display:
-            return display
-
+    """Aktive Playlist: MPD-Status, HTTP/MQTT-Cache, sonst Track in .m3u finden."""
     mpd_raw = parse_status_lastloadedplaylist(status)
     if mpd_raw:
-        display = display_playlist_filename(mpd_raw)
-        match = find_playlist_in_available(display, available)
+        match = find_playlist_in_available(display_playlist_filename(mpd_raw), available)
         if match:
             return match
-        if display:
-            return display
+
+    if loaded_playlist:
+        match = find_playlist_in_available(
+            display_playlist_filename(loaded_playlist), available
+        )
+        if match:
+            return match
 
     if mpd and current_file:
         inferred = infer_active_playlist_name(mpd, current_file, available)

@@ -33,6 +33,10 @@ def marked_file_lock(path: str) -> Iterator[None]:
         if fcntl is not None:
             fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
         lock_handle.close()
+        try:
+            os.remove(lock_path)
+        except OSError:
+            pass
 
 
 def read_marked_lines(path: str) -> list[str]:
