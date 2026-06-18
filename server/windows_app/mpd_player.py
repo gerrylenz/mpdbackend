@@ -35,7 +35,13 @@ try:
 except ImportError:
     pystray = None  # type: ignore[assignment]
 
-from windows_util import autostart_enabled, configure_webview2_for_http, load_tray_image, set_autostart
+from windows_util import (
+    autostart_enabled,
+    configure_webview2_for_http,
+    install_dir,
+    load_tray_image,
+    set_autostart,
+)
 
 APP_NAME = "mpdbackend-player"
 DEFAULT_URL = "http://127.0.0.1:4533"
@@ -151,8 +157,7 @@ class PlayerApp:
 
 
 def config_dir() -> Path:
-    base = os.environ.get("APPDATA", "").strip() or str(Path.home())
-    return Path(base) / APP_NAME
+    return install_dir()
 
 
 def config_path() -> Path:
@@ -185,8 +190,6 @@ def load_config() -> dict[str, Any]:
 
 
 def save_config(config: dict[str, Any]) -> None:
-    directory = config_dir()
-    directory.mkdir(parents=True, exist_ok=True)
     payload = {
         "url": normalize_base_url(str(config.get("url") or DEFAULT_URL)),
         "password": str(config.get("password") or ""),

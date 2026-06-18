@@ -14,6 +14,13 @@ APP_REG_NAME = "MPDPlayer"
 AUTOSTART_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 
 
+def install_dir() -> Path:
+    """Verzeichnis der EXE bzw. mpd_player.py (config.json liegt hier)."""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent
+
+
 def app_root() -> Path:
     """Verzeichnis mit assets/ (PyInstaller: _MEIPASS)."""
     if getattr(sys, "frozen", False):

@@ -67,6 +67,6 @@ if errorlevel 1 (
 echo.
 echo Fertig: %FINAL_DIST%\MPD-Player.exe
 echo Zwischendateien: %BUILD_ROOT%
-echo Einstellungen: %%APPDATA%%\mpdbackend-player\config.json
+echo Einstellungen: config.json neben MPD-Player.exe
 echo Taskleiste: Rechtsklick auf X minimiert ins Tray
 echo Autostart: Einstellungen oder Tray-Menue
