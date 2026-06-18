@@ -244,10 +244,15 @@ def delete_marked(
     *,
     dry_run: bool,
     cover_dir: Path | None,
-) -> tuple[int, int, list[str]]:
-    """Löscht Dateien unter music_root. Returns (deleted, skipped, errors)."""
+) -> tuple[int, int, int, list[str]]:
+    """Löscht Dateien unter music_root.
+
+    Returns (deleted, skipped, missing, errors).
+    missing zählt fehlende Dateien; errors enthält nur blockierende Fehler.
+    """
     deleted = 0
     skipped = 0
+    missing = 0
     errors: list[str] = []
 
     total = len(rel_paths)
@@ -272,7 +277,7 @@ def delete_marked(
         if not target.is_file():
             msg = f"keine Datei: {target}"
             log(f"{prefix} FEHLER: {msg}")
-            errors.append(msg)
+            missing += 1
             continue
 
         if cover_dir is not None:
@@ -292,7 +297,7 @@ def delete_marked(
             log(f"{prefix} FEHLER: {err}")
             errors.append(msg)
 
-    return deleted, skipped, errors
+    return deleted, skipped, missing, errors
 
 
 def run_mpd_update(*, dry_run: bool) -> None:
@@ -479,7 +484,7 @@ def main() -> int:
         return 0
 
     log("--- Verarbeitung starten ---")
-    deleted, skipped, errors = delete_marked(
+    deleted, skipped, missing, errors = delete_marked(
         music_root,
         rel_paths,
         dry_run=settings.dry_run,
@@ -490,6 +495,7 @@ def main() -> int:
     log(f"Verarbeitet: {len(rel_paths)}")
     log(f"Gelöscht bzw. dry-run: {deleted}")
     log(f"Übersprungen: {skipped}")
+    log(f"Nicht gefunden: {missing}")
     log(f"Fehler: {len(errors)}")
 
     if errors:
@@ -497,6 +503,12 @@ def main() -> int:
         if settings.keep_list_on_error:
             log("Markierliste bleibt erhalten (--keep-list-on-error)")
         return 1
+
+    if missing:
+        log(
+            f"Hinweis: {missing} Datei(en) waren nicht vorhanden; "
+            "Markierliste wird trotzdem geleert"
+        )
 
     if settings.mpd_update:
         log("--- MPD-Datenbank aktualisieren ---")

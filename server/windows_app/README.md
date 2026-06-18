@@ -48,7 +48,7 @@ Konfiguration: `config.json` im gleichen Ordner wie `MPD-Player.exe` bzw. `mpd_p
 
 WebView2 zeigt das, wenn die App per **HTTPS** verbindet, der mpdbackend-Server aber nur **HTTP** spricht (typisch bei `https://127.0.0.1:4533`).
 
-**Erscheint die Meldung kurz und verschwindet nach Wegklicken:** Edge/WebView2 stuft die Adresse zuerst auf HTTPS hoch. Neuere App-Versionen setzen dagegen WebView2-Flags automatisch (`build.bat` / EXE neu bauen bzw. `python mpd_player.py` aus dem aktuellen Stand).
+**Erscheint die Meldung kurz und verschwindet nach Wegklicken:** Edge/WebView2 stuft die Adresse zuerst auf HTTPS hoch. Neuere App-Versionen setzen die nötigen WebView2-Flags direkt in pywebview (nicht nur per Umgebungsvariable). EXE neu bauen (`build.bat`) und `config.json` auf **`http://`** prüfen.
 
 **Lösung:**
 

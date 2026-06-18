@@ -99,8 +99,8 @@ function findPlaylistInList(name, playlists) {
 function resolveActivePlaylist(playlists, activeFromApi) {
   const candidates = [
     activeFromApi,
-    state.activePlaylist,
     state.lastNowPlaying?.playlist,
+    state.activePlaylist,
     els.playlistSelect?.value,
   ].filter(Boolean);
 
@@ -498,6 +498,9 @@ function syncPlaylistSelect(active) {
 
   const match = findPlaylistInList(active, state.playlists);
   if (!match) {
+    if (state.controlGranted && state.playlists.length > 0) {
+      schedulePlaylistReload();
+    }
     return;
   }
 
@@ -505,6 +508,18 @@ function syncPlaylistSelect(active) {
   if (els.playlistSelect.value !== match) {
     els.playlistSelect.value = match;
   }
+}
+
+let playlistReloadTimer = null;
+
+function schedulePlaylistReload() {
+  if (playlistReloadTimer !== null) {
+    return;
+  }
+  playlistReloadTimer = setTimeout(() => {
+    playlistReloadTimer = null;
+    loadPlaylists().catch(console.warn);
+  }, 400);
 }
 
 function updatePlaylistPos(pos, length) {
@@ -534,6 +549,7 @@ function updateNowPlaying(data) {
   els.progressBar.style.width = `${percent}%`;
 
   updateCover(data.cover_name || "");
+  const previousPlaylist = state.lastNowPlaying?.playlist || "";
   syncPlaylistSelect(data.playlist || "");
   updatePlaylistPos(data.pos, data.playlist_length);
 
@@ -546,6 +562,13 @@ function updateNowPlaying(data) {
   }
 
   state.lastNowPlaying = data;
+  if (
+    state.controlGranted &&
+    data.playlist &&
+    data.playlist !== previousPlaylist
+  ) {
+    schedulePlaylistReload();
+  }
   syncMediaSession(data);
 }
 

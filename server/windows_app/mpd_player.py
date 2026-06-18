@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
 import threading
 from pathlib import Path
@@ -36,9 +37,10 @@ except ImportError:
     pystray = None  # type: ignore[assignment]
 
 from windows_util import (
+    app_install_dir,
     autostart_enabled,
     configure_webview2_for_http,
-    install_dir,
+    is_private_host,
     load_tray_image,
     set_autostart,
 )
@@ -77,6 +79,8 @@ class PlayerApp:
     def show_window(self) -> None:
         if self.window is None:
             return
+        self.config = load_config()
+        self.reload_player()
         self.window.show()
         try:
             self.window.restore()
@@ -94,16 +98,35 @@ class PlayerApp:
             player_url(str(self.config["url"]), str(self.config.get("password", "")))
         )
 
-    def open_settings(self) -> None:
-        edited = edit_settings_dialog(self.config)
-        if edited is None:
-            return
+    def apply_settings(self, edited: dict[str, Any]) -> None:
         self.config.update(edited)
         save_config(self.config)
         if self.config_bool("autostart"):
             set_autostart(True)
         else:
             set_autostart(False)
+        self.reload_player()
+
+    def open_settings(self) -> None:
+        # Tkinter muss auf dem GUI-Hauptthread laufen. Tray-Menü-Callbacks laufen
+        # dagegen in einem Hintergrundthread, während webview.start() den Hauptthread
+        # blockiert — Eingabefelder reagieren dann oft nicht auf Klicks.
+        if self.window is not None:
+            proc = subprocess.Popen(settings_command())
+            threading.Thread(
+                target=self._after_settings_process,
+                args=(proc,),
+                daemon=True,
+            ).start()
+            return
+        edited = edit_settings_dialog(self.config)
+        if edited is None:
+            return
+        self.apply_settings(edited)
+
+    def _after_settings_process(self, proc: subprocess.Popen[Any]) -> None:
+        proc.wait()
+        self.config = load_config()
         self.reload_player()
 
     def quit_app(self) -> None:
@@ -156,16 +179,27 @@ class PlayerApp:
         thread.start()
 
 
-def config_dir() -> Path:
-    return install_dir()
-
-
 def config_path() -> Path:
-    return config_dir() / "config.json"
+    return app_install_dir() / "config.json"
+
+
+def legacy_config_path() -> Path:
+    base = os.environ.get("APPDATA", "").strip() or str(Path.home())
+    return Path(base) / APP_NAME / "config.json"
+
+
+def resolve_config_path() -> Path:
+    path = config_path()
+    if path.is_file():
+        return path
+    legacy = legacy_config_path()
+    if legacy.is_file():
+        return legacy
+    return path
 
 
 def load_config() -> dict[str, Any]:
-    path = config_path()
+    path = resolve_config_path()
     config = dict(DEFAULT_CONFIG)
     if not path.is_file():
         return config
@@ -190,34 +224,18 @@ def load_config() -> dict[str, Any]:
 
 
 def save_config(config: dict[str, Any]) -> None:
+    path = config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "url": normalize_base_url(str(config.get("url") or DEFAULT_URL)),
         "password": str(config.get("password") or ""),
         "minimize_to_tray": bool(config.get("minimize_to_tray", True)),
         "autostart": bool(config.get("autostart", False)),
     }
-    config_path().write_text(
+    path.write_text(
         json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
         encoding="utf-8",
     )
-
-
-def is_private_host(host: str) -> bool:
-    host = host.lower().strip("[]")
-    if host in ("127.0.0.1", "localhost", "::1"):
-        return True
-    if host.endswith(".local"):
-        return True
-    parts = host.split(".")
-    if len(parts) == 4 and all(part.isdigit() and 0 <= int(part) <= 255 for part in parts):
-        first, second = int(parts[0]), int(parts[1])
-        if first == 10:
-            return True
-        if first == 192 and second == 168:
-            return True
-        if first == 172 and 16 <= second <= 31:
-            return True
-    return False
 
 
 def normalize_base_url(url: str) -> str:
@@ -245,6 +263,14 @@ def player_url(base_url: str, password: str) -> str:
     return f"{base}/?password={quote(password.strip(), safe='')}"
 
 
+def settings_command() -> list[str]:
+    """Kommandozeile für einen separaten Einstellungs-Dialog."""
+    if getattr(sys, "frozen", False):
+        return [sys.executable, "--settings"]
+    script = Path(__file__).resolve()
+    return [sys.executable, str(script), "--settings"]
+
+
 def edit_settings_dialog(config: dict[str, Any]) -> dict[str, Any] | None:
     import tkinter as tk
     from tkinter import messagebox, ttk
@@ -259,9 +285,8 @@ def edit_settings_dialog(config: dict[str, Any]) -> dict[str, Any] | None:
 
     ttk.Label(frame, text="mpdbackend URL:").grid(row=0, column=0, sticky="w")
     url_var = tk.StringVar(value=str(config.get("url", DEFAULT_URL)))
-    ttk.Entry(frame, textvariable=url_var, width=42).grid(
-        row=1, column=0, columnspan=2, sticky="ew", pady=(4, 4)
-    )
+    url_entry = ttk.Entry(frame, textvariable=url_var, width=42)
+    url_entry.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(4, 4))
     ttk.Label(
         frame,
         text="Standard: http:// (nicht https://), z. B. http://192.168.1.10:4533",
@@ -322,7 +347,15 @@ def edit_settings_dialog(config: dict[str, Any]) -> dict[str, Any] | None:
     ttk.Button(buttons, text="Abbrechen", command=on_cancel).grid(row=0, column=0, padx=(0, 8))
     ttk.Button(buttons, text="Speichern", command=on_ok).grid(row=0, column=1)
 
+    def focus_dialog() -> None:
+        root.lift()
+        root.attributes("-topmost", True)
+        root.after(50, lambda: root.attributes("-topmost", False))
+        url_entry.focus_set()
+        url_entry.icursor(tk.END)
+
     root.protocol("WM_DELETE_WINDOW", on_cancel)
+    root.after(50, focus_dialog)
     root.mainloop()
 
     value = result["value"]
@@ -344,7 +377,7 @@ def parse_args() -> argparse.Namespace:
 
 def maybe_fix_saved_url(config: dict[str, Any]) -> None:
     """Speichert korrigierte http://-URL, falls in config.json noch https:// stand."""
-    path = config_path()
+    path = resolve_config_path()
     if not path.is_file():
         return
     try:
@@ -374,9 +407,7 @@ def main() -> int:
         edited = edit_settings_dialog(config)
         if edited is None:
             return 1
-        config.update(edited)
-        save_config(config)
-        set_autostart(bool(config.get("autostart")))
+        PlayerApp(config).apply_settings(edited)
         print(f"Gespeichert: {config_path()}")
         return 0
 
