@@ -42,6 +42,7 @@ const state = {
   streamPlaying: false,
   streamWanted: false,
   streamReconnecting: false,
+  liveEdgeSyncId: null,
   volumeDragging: false,
   playlistChanging: false,
   currentFile: "",
@@ -329,6 +330,43 @@ function activeStreamUrl() {
   return String(channel?.stream_url || els.stream.src || "").trim();
 }
 
+/** Live-HTTP: Browser puffert sonst mehrere Sekunden vor — an die Live-Kante springen. */
+const LIVE_EDGE_MAX_LAG_SEC = 0.25;
+const LIVE_EDGE_SYNC_MS = 150;
+
+function stopLiveEdgeSync() {
+  if (state.liveEdgeSyncId !== null) {
+    clearInterval(state.liveEdgeSyncId);
+    state.liveEdgeSyncId = null;
+  }
+}
+
+function tickLiveEdge() {
+  const audio = els.stream;
+  if (!state.streamPlaying || audio.paused || state.streamReconnecting) {
+    return;
+  }
+  const ranges = audio.buffered;
+  if (!ranges || ranges.length === 0) {
+    return;
+  }
+  const liveEnd = ranges.end(ranges.length - 1);
+  const lag = liveEnd - audio.currentTime;
+  if (lag <= LIVE_EDGE_MAX_LAG_SEC) {
+    return;
+  }
+  try {
+    audio.currentTime = Math.max(0, liveEnd - 0.05);
+  } catch (_err) {
+    // Manche Icecast-Streams sind nicht seekbar — dann bleibt nur ein nativer Client (z. B. Snapcast).
+  }
+}
+
+function startLiveEdgeSync() {
+  stopLiveEdgeSync();
+  state.liveEdgeSyncId = setInterval(tickLiveEdge, LIVE_EDGE_SYNC_MS);
+}
+
 function reloadStreamElement() {
   const base = activeStreamUrl();
   if (!base) {
@@ -601,9 +639,13 @@ function setStreamUi(playing) {
   els.streamLabel.textContent = playing ? "Stream läuft" : "Stream starten";
 
   if (!playing) {
+    stopLiveEdgeSync();
     clearMediaSession();
-  } else if (state.lastNowPlaying) {
-    syncMediaSession(state.lastNowPlaying);
+  } else {
+    startLiveEdgeSync();
+    if (state.lastNowPlaying) {
+      syncMediaSession(state.lastNowPlaying);
+    }
   }
 }
 
