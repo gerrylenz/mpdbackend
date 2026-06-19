@@ -17,3 +17,14 @@ server/windows_app/build/
 server/windows_app/dist/
 server/windows_app/config.json
 server/windows_app/*.spec
+
+# Snapcast-Client (lokal, nicht im Repo)
+server/snapclient_core.py
+server/tools/snapclient.py
+server/tools/snapclient.env.example
+server/tests/test_snapclient_*.py
+server/windows_app/snapclient_launcher.py
+server/windows_app/snapclient.config*
+server/windows_app/build_snapclient.bat
+server/windows_app/snapclient.exe
+server/windows_app/snapcast/

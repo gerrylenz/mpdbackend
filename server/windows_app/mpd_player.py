@@ -348,9 +348,11 @@ def edit_settings_dialog(config: dict[str, Any]) -> dict[str, Any] | None:
     ttk.Button(buttons, text="Speichern", command=on_ok).grid(row=0, column=1)
 
     def focus_dialog() -> None:
+        root.update_idletasks()
         root.lift()
         root.attributes("-topmost", True)
         root.after(50, lambda: root.attributes("-topmost", False))
+        root.focus_force()
         url_entry.focus_set()
         url_entry.icursor(tk.END)
 
