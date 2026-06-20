@@ -14,6 +14,7 @@ Desktop-Fenster für den mpdbackend-Web-Player (WebView2).
 - Windows 10/11 mit [WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/)
 - Python 3.10+ (Entwicklung / EXE-Bau)
 - Laufender mpdbackend-Server
+- Beim **EXE-Build** wird mpv automatisch mitgebündelt (`build.bat` + optional `pip install py7zr`)
 
 ## Schnellstart
 
@@ -36,6 +37,8 @@ Konfiguration: `config.json` im gleichen Ordner wie `MPD-Player.exe` bzw. `mpd_p
 |--------|-----------|
 | `minimize_to_tray` | X schließt ins Tray statt Beenden (Standard: an) |
 | `autostart` | App beim Windows-Login starten |
+
+Im Windows-Desktop-Client wird der HTTP-Stream über **mpv** abgespielt (nicht über den Browser) — vergleichbar mit MPD Pilot/libmpv. Im normalen Webbrowser bleibt die Wiedergabe über `<audio>`.
 
 ## Taskleiste
 
@@ -68,6 +71,15 @@ WebView2 zeigt das, wenn die App per **HTTPS** verbindet, der mpdbackend-Server 
 ```
 
 Erzeugt `dist\MPD-Player.exe` mit Icon und eingebetteten `assets/`.
+Lädt beim Build automatisch **mpv** (Windows-Build aus dem mpv-Quellcode) nach `dist\mpv\`.
+
+```powershell
+pip install py7zr
+.\build.bat
+```
+
+Ohne `py7zr` oder 7-Zip schlägt der mpv-Download fehl — dann `mpv.exe` manuell nach `dist\mpv\` legen
+([mpv.io/installation](https://mpv.io/installation/)). Quellhinweis: `dist\mpv\MPV_SOURCE.txt` (GPL).
 
 PyInstaller wird über `python -m PyInstaller` aufgerufen (nicht `pyinstaller` im PATH nötig).
 pywebview bringt einen eigenen PyInstaller-Hook mit; `--collect-all webview` ist nicht nötig

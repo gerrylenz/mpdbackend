@@ -36,6 +36,8 @@ try:
 except ImportError:
     pystray = None  # type: ignore[assignment]
 
+from native_mpv import NativeMpvPlayer
+from webview_api import WebPlayerApi
 from windows_util import (
     app_install_dir,
     autostart_enabled,
@@ -69,6 +71,16 @@ class PlayerApp:
         self.window: webview.Window | None = None
         self.tray_icon: pystray.Icon | None = None
         self.quitting = False
+        self._mpv = NativeMpvPlayer()
+
+    def native_start_stream(self, url: str) -> None:
+        self._mpv.start(url)
+
+    def native_stop_stream(self) -> None:
+        self._mpv.stop()
+
+    def native_stream_playing(self) -> bool:
+        return self._mpv.playing
 
     def config_bool(self, key: str) -> bool:
         value = self.config.get(key, DEFAULT_CONFIG[key])
@@ -94,6 +106,7 @@ class PlayerApp:
     def reload_player(self) -> None:
         if self.window is None:
             return
+        self._mpv.stop()
         self.window.load_url(
             player_url(str(self.config["url"]), str(self.config.get("password", "")))
         )
@@ -131,6 +144,7 @@ class PlayerApp:
 
     def quit_app(self) -> None:
         self.quitting = True
+        self._mpv.stop()
         if self.tray_icon is not None:
             self.tray_icon.stop()
         if self.window is not None:
@@ -426,6 +440,7 @@ def main() -> int:
     # Selbstsignierte Zertifikate (Reverse-Proxy) tolerieren; muss vor create_window gesetzt werden.
     webview.settings["IGNORE_SSL_ERRORS"] = True
 
+    web_api = WebPlayerApi(app)
     app.window = webview.create_window(
         WINDOW_TITLE,
         start_url,
@@ -433,6 +448,7 @@ def main() -> int:
         height=WINDOW_HEIGHT,
         min_size=(MIN_WIDTH, MIN_HEIGHT),
         text_select=True,
+        js_api=web_api,
     )
     app.window.events.closing += app.on_window_closing
 
@@ -441,6 +457,7 @@ def main() -> int:
 
     webview.start(debug=False)
     app.quitting = True
+    app._mpv.stop()
     if app.tray_icon is not None:
         try:
             app.tray_icon.stop()
