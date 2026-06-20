@@ -45,6 +45,8 @@ python -m PyInstaller ^
   --hidden-import webview.platforms.edgechromium ^
   --hidden-import webview.platforms.winforms ^
   --hidden-import pystray._win32 ^
+  --hidden-import native_mpv ^
+  --hidden-import webview_api ^
   --exclude-module webview.platforms.android ^
   --exclude-module webview.platforms.cocoa ^
   --exclude-module webview.platforms.gtk ^
@@ -65,7 +67,19 @@ if errorlevel 1 (
 )
 
 echo.
+echo mpv fuer native Stream-Wiedergabe bündeln ...
+python bundle_mpv.py --dest "%FINAL_DIST%\mpv" --skip-if-present
+if errorlevel 1 (
+  echo.
+  echo WARNUNG: mpv konnte nicht gebündelt werden.
+  echo Optional: pip install py7zr  ODER  7-Zip installieren, dann erneut bauen.
+  echo Alternativ: mpv.exe manuell nach %FINAL_DIST%\mpv\ legen.
+  echo.
+)
+
+echo.
 echo Fertig: %FINAL_DIST%\MPD-Player.exe
+echo         %FINAL_DIST%\mpv\mpv.exe  ^(Stream-Wiedergabe^)
 echo Zwischendateien: %BUILD_ROOT%
 echo Einstellungen: config.json neben MPD-Player.exe
 echo Taskleiste: Rechtsklick auf X minimiert ins Tray

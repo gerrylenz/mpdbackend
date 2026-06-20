@@ -53,6 +53,47 @@ const state = {
   playlistPollId: null,
 };
 
+const nativePlayer = {
+  available: false,
+};
+
+async function waitForPywebviewApi() {
+  if (window.pywebview?.api) {
+    return;
+  }
+  await new Promise((resolve) => {
+    window.addEventListener("pywebviewready", resolve, { once: true });
+  });
+}
+
+async function detectNativePlayer() {
+  try {
+    await waitForPywebviewApi();
+    if (typeof window.pywebview.api.is_native_player === "function") {
+      nativePlayer.available = Boolean(await window.pywebview.api.is_native_player());
+    }
+  } catch (err) {
+    console.warn("native player detection failed", err);
+  }
+  if (nativePlayer.available) {
+    const hint = document.querySelector(".stream-block .hint");
+    if (hint) {
+      hint.textContent = "Live-Stream über mpv (minimaler Puffer) · Senderwahl oben";
+    }
+  }
+}
+
+async function nativeStartStream(url) {
+  const result = await window.pywebview.api.start_stream(url);
+  if (!result?.ok) {
+    throw new Error(result?.error || "Stream-Start fehlgeschlagen");
+  }
+}
+
+async function nativeStopStream() {
+  await window.pywebview.api.stop_stream();
+}
+
 const mediaSession = {
   supported: typeof navigator !== "undefined" && "mediaSession" in navigator,
   lastMetadataKey: "",
@@ -294,11 +335,11 @@ function initMediaSession() {
   }
 
   navigator.mediaSession.setActionHandler("play", async () => {
-    await startBrowserStream();
+    await startStream();
   });
 
   navigator.mediaSession.setActionHandler("pause", () => {
-    pauseBrowserStream();
+    pauseStream();
   });
 
   navigator.mediaSession.setActionHandler("previoustrack", () => {
@@ -317,8 +358,7 @@ function initMediaSession() {
 
   try {
     navigator.mediaSession.setActionHandler("stop", () => {
-      els.stream.pause();
-      setStreamUi(false);
+      pauseStream();
     });
   } catch (_err) {
     // optional in some browsers
@@ -380,9 +420,20 @@ function reloadStreamElement() {
   return true;
 }
 
-function pauseBrowserStream({ clearWanted = true } = {}) {
+async function pauseStream({ clearWanted = true } = {}) {
   if (clearWanted) {
     state.streamWanted = false;
+  }
+  if (nativePlayer.available) {
+    try {
+      await nativeStopStream();
+    } catch (err) {
+      console.warn(err);
+    }
+    if (state.streamPlaying) {
+      setStreamUi(false);
+    }
+    return;
   }
   if (!els.stream.paused) {
     els.stream.pause();
@@ -390,6 +441,41 @@ function pauseBrowserStream({ clearWanted = true } = {}) {
   if (state.streamPlaying) {
     setStreamUi(false);
   }
+}
+
+async function reconnectStream({ retries = 5, delayMs = 450 } = {}) {
+  if (!state.streamWanted) {
+    return false;
+  }
+  const url = activeStreamUrl();
+  if (!url) {
+    return false;
+  }
+
+  if (nativePlayer.available) {
+    state.streamReconnecting = true;
+    try {
+      for (let attempt = 0; attempt < retries; attempt += 1) {
+        if (attempt > 0) {
+          await new Promise((resolve) => setTimeout(resolve, delayMs));
+        }
+        try {
+          await nativeStopStream();
+          await nativeStartStream(url);
+          setStreamUi(true);
+          return true;
+        } catch (err) {
+          console.warn("native stream reconnect failed", attempt + 1, err);
+        }
+      }
+      setStreamUi(false);
+      return false;
+    } finally {
+      state.streamReconnecting = false;
+    }
+  }
+
+  return reconnectBrowserStream({ retries, delayMs });
 }
 
 async function reconnectBrowserStream({ retries = 5, delayMs = 450 } = {}) {
@@ -419,12 +505,28 @@ async function reconnectBrowserStream({ retries = 5, delayMs = 450 } = {}) {
   }
 }
 
-async function startBrowserStream({ forceReload = false } = {}) {
+async function startStream({ forceReload = false } = {}) {
   state.streamWanted = true;
-  if (!activeStreamUrl()) {
+  const url = activeStreamUrl();
+  if (!url) {
     state.streamWanted = false;
     return;
   }
+
+  if (nativePlayer.available) {
+    try {
+      if (forceReload) {
+        await nativeStopStream();
+      }
+      await nativeStartStream(url);
+      setStreamUi(true);
+    } catch (err) {
+      console.warn(err);
+      await reconnectStream();
+    }
+    return;
+  }
+
   if (forceReload) {
     await reconnectBrowserStream();
     return;
@@ -642,7 +744,9 @@ function setStreamUi(playing) {
     stopLiveEdgeSync();
     clearMediaSession();
   } else {
-    startLiveEdgeSync();
+    if (!nativePlayer.available) {
+      startLiveEdgeSync();
+    }
     if (state.lastNowPlaying) {
       syncMediaSession(state.lastNowPlaying);
     }
@@ -702,7 +806,7 @@ async function pollHealth() {
 
 els.channelSelect.addEventListener("change", async () => {
   const keepStream = state.streamWanted;
-  pauseBrowserStream({ clearWanted: false });
+  await pauseStream({ clearWanted: false });
   state.lastCoverName = "";
   state.lastNowPlaying = null;
   updateChannelUi(els.channelSelect.value);
@@ -712,7 +816,7 @@ els.channelSelect.addEventListener("change", async () => {
   }
   if (keepStream) {
     state.streamWanted = true;
-    await reconnectBrowserStream();
+    await reconnectStream();
   }
 });
 
@@ -731,7 +835,7 @@ els.playlistSelect.addEventListener("change", async () => {
     await postText("/cmd/playlist", name);
     state.activePlaylist = name;
     if (keepStream) {
-      await reconnectBrowserStream({ retries: 8, delayMs: 500 });
+      await reconnectStream({ retries: 8, delayMs: 500 });
     }
   } catch (err) {
     console.warn(err);
@@ -775,19 +879,19 @@ els.btnSaveFile.addEventListener("click", async () => {
 });
 
 els.btnStop.addEventListener("click", () => {
-  pauseBrowserStream();
+  pauseStream();
   postText("/cmd/player", "stop").catch(console.warn);
 });
 
 els.btnPlay.addEventListener("click", async () => {
   const command = state.playbackState === "play" ? "stop" : "play";
   if (command === "stop") {
-    pauseBrowserStream();
+    pauseStream();
   }
   try {
     await postText("/cmd/player", command);
     if (command === "play") {
-      await startBrowserStream();
+      await startStream();
     }
   } catch (err) {
     console.warn(err);
@@ -812,35 +916,43 @@ els.volume.addEventListener("change", () => {
 });
 
 els.btnStream.addEventListener("click", async () => {
-  if (!els.stream.src) {
+  if (!activeStreamUrl()) {
     return;
   }
 
   if (state.streamPlaying || state.streamWanted) {
-    pauseBrowserStream();
+    await pauseStream();
     return;
   }
 
-  await startBrowserStream();
+  await startStream();
 });
 
 els.stream.addEventListener("pause", () => {
+  if (nativePlayer.available) {
+    return;
+  }
   if (els.stream.ended || state.streamReconnecting || state.playlistChanging) {
     return;
   }
   setStreamUi(false);
   if (state.streamWanted) {
-    reconnectBrowserStream().catch(console.warn);
+    reconnectStream().catch(console.warn);
   }
 });
 
 els.stream.addEventListener("play", () => {
+  if (nativePlayer.available) {
+    return;
+  }
   setStreamUi(true);
 });
 
 initMediaSession();
 
 async function bootstrap() {
+  await detectNativePlayer();
+
   try {
     await loadWebSession();
   } catch (err) {

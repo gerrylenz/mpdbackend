@@ -17,6 +17,9 @@ server/windows_app/build/
 server/windows_app/dist/
 server/windows_app/config.json
 server/windows_app/*.spec
+server/windows_app/mpv.exe
+server/windows_app/mpv/
+server/windows_app/dist/mpv/
 
 # Snapcast-Client (lokal, nicht im Repo)
 server/snapclient_core.py
