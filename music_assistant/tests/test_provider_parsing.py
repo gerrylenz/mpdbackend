@@ -151,21 +151,50 @@ def test_stream_url_with_session_appends_query_param(
     )
 
 
-def test_channel_has_stalled_queues(provider: MPDBackendRadioProvider) -> None:
-    """Stalled queues should be detected for auto-resume."""
+def test_should_auto_resume_respects_user_stop(provider: MPDBackendRadioProvider) -> None:
+    """Inactive idle queues after user stop must not trigger auto-resume."""
     streamdetails = Mock()
     streamdetails.provider = "mpdbackend_test"
     streamdetails.item_id = "0"
     current_item = Mock(streamdetails=streamdetails)
+    stopped_queue = Mock(
+        current_item=current_item,
+        state=PlaybackState.IDLE,
+        active=False,
+        queue_id="queue0",
+    )
     playing_queue = Mock(
         current_item=current_item,
         state=PlaybackState.PLAYING,
+        active=True,
+        queue_id="queue0",
     )
-    idle_queue = Mock(
+    idle_active_queue = Mock(
         current_item=current_item,
         state=PlaybackState.IDLE,
+        active=True,
+        queue_id="queue0",
     )
-    provider.mass.player_queues.all.return_value = [playing_queue, idle_queue]
+    provider.mass.player_queues.all.return_value = [stopped_queue]
+    provider.mass.players.all_players.return_value = []
 
-    assert provider._channel_has_stalled_queues("0") is True
-    assert provider._channel_has_stalled_queues("1") is False
+    assert provider._should_auto_resume("0") is False
+    assert provider._should_auto_resume("1") is False
+
+    provider.mass.player_queues.all.return_value = [idle_active_queue]
+    assert provider._should_auto_resume("0") is True
+
+    provider.mass.player_queues.all.return_value = [playing_queue]
+    assert provider._should_auto_resume("0") is False
+
+    stopped_queue.active = False
+    playing_player = Mock()
+    playing_player.state.state = PlaybackState.PLAYING
+    playing_player.state.synced_to = None
+    playing_player.state.active_group = None
+    playing_player.state.active_source = None
+    playing_player.player_id = "player0"
+    provider.mass.player_queues.all.return_value = [stopped_queue]
+    provider.mass.players.all_players.return_value = [playing_player]
+    provider.mass.players.get_active_queue.return_value = stopped_queue
+    assert provider._should_auto_resume("0") is True
