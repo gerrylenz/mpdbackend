@@ -4,10 +4,14 @@ from music_assistant_models.enums import ContentType
 
 CONF_BACKEND_URL = "backend_url"
 
-STREAM_METADATA_UPDATE_INTERVAL = 5
+STREAM_METADATA_UPDATE_INTERVAL = 3
 CHANNELS_RELOAD_INTERVAL = 60
 # Warten bis MPD-HTTP-Stream nach Playlist-Wechsel wieder stabil ist
 PLAYLIST_RESUME_DELAY = 2.5
+# Hintergrund-Sync: MPD spielt, MA-Queue aber idle (Stream-Abbruch)
+STREAM_SYNC_INTERVAL = 3
+STREAM_RESUME_DELAY = 1.0
+STREAM_RESUME_COOLDOWN = 20
 
 CONTENT_TYPE_FROM_STRING: dict[str, ContentType] = {
     "mp3": ContentType.MP3,

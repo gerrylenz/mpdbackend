@@ -7,7 +7,11 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
 
 from music_assistant_models.enums import ContentType, ImageType, MediaType, PlaybackState, StreamType
-from music_assistant_models.errors import MediaNotFoundError, UnplayableMediaError
+from music_assistant_models.errors import (
+    InvalidCommand,
+    MediaNotFoundError,
+    UnplayableMediaError,
+)
 from music_assistant_models.media_items import (
     AudioFormat,
     BrowseFolder,
@@ -28,6 +32,9 @@ from .constants import (
     CONTENT_TYPE_FROM_STRING,
     STREAM_METADATA_UPDATE_INTERVAL,
     PLAYLIST_RESUME_DELAY,
+    STREAM_RESUME_COOLDOWN,
+    STREAM_RESUME_DELAY,
+    STREAM_SYNC_INTERVAL,
     RadioMpdChannel,
 )
 
@@ -53,10 +60,17 @@ class MPDBackendRadioProvider(MusicProvider):
         self._channels: dict[str, RadioMpdChannel] = {}
         self._channels_loaded_at = 0.0
         self._last_playlists: dict[str, str] = {}
+        self._last_resume_attempt: dict[str, float] = {}
+        self._resume_pending: set[str] = set()
+        self._channel_queue_ids: dict[str, set[str]] = {}
 
     async def loaded_in_mass(self) -> None:
         """Load radio channels from mpdbackend after the provider is loaded."""
         await self._load_channels()
+        self.mass.create_task(
+            self._stream_sync_loop(),
+            task_id=f"{self.instance_id}_stream_sync",
+        )
 
     async def unload(self, is_removed: bool = False) -> None:
         """Called when the provider is unloaded."""
@@ -284,8 +298,13 @@ class MPDBackendRadioProvider(MusicProvider):
         """Append a cache-buster so Chromecast sees metadata as changed after restart."""
         if not image_url or session is None:
             return image_url
-        separator = "&" if "?" in image_url else "?"
-        return f"{image_url}{separator}_ps={session}"
+        return self._stream_url_with_session(image_url, session)
+
+    @staticmethod
+    def _stream_url_with_session(stream_url: str, session: int) -> str:
+        """Append a playback-session query param so MA/ffmpeg opens a fresh stream."""
+        separator = "&" if "?" in stream_url else "?"
+        return f"{stream_url}{separator}_ps={session}"
 
     def _trigger_players_for_queue(self, queue_id: str, *, force_update: bool = False) -> None:
         """Notify all players currently using the given queue."""
@@ -490,6 +509,205 @@ class MPDBackendRadioProvider(MusicProvider):
         self._last_playlists[channel_id] = current
         return bool(current) and current != previous
 
+    def _track_channel_queue(self, channel_id: str, queue_id: str) -> None:
+        """Remember queue ids per channel for inactive-queue recovery."""
+        self._channel_queue_ids.setdefault(channel_id, set()).add(queue_id)
+
+    def _channel_has_stalled_queues(self, channel_id: str) -> bool:
+        """True when MA queues for this channel exist but are not playing."""
+        for queue in self.mass.player_queues.all():
+            current_item = queue.current_item
+            streamdetails = current_item.streamdetails if current_item else None
+            if not streamdetails:
+                continue
+            if streamdetails.provider != self.instance_id:
+                continue
+            if streamdetails.item_id != channel_id:
+                continue
+            self._track_channel_queue(channel_id, queue.queue_id)
+            if queue.state != PlaybackState.PLAYING or not queue.active:
+                return True
+        for queue_id in self._channel_queue_ids.get(channel_id, ()):
+            queue = self.mass.player_queues.get(queue_id)
+            if queue is None:
+                continue
+            if queue.state != PlaybackState.PLAYING or not queue.active:
+                return True
+        return False
+
+    def _resume_cooldown_ready(self, channel_id: str) -> bool:
+        """Limit auto-resume attempts per channel."""
+        last_attempt = self._last_resume_attempt.get(channel_id, 0.0)
+        return time.time() - last_attempt >= STREAM_RESUME_COOLDOWN
+
+    def _maybe_schedule_stream_resume(
+        self,
+        channel_id: str,
+        *,
+        reason: str,
+        delay: float | None = None,
+    ) -> None:
+        """Schedule resume when MPD plays but MA queues for the channel stalled."""
+        if channel_id in self._resume_pending:
+            return
+        if not self._resume_cooldown_ready(channel_id):
+            return
+        if not self._channel_has_stalled_queues(channel_id):
+            return
+        self._resume_pending.add(channel_id)
+        self._schedule_radio_resume(
+            channel_id,
+            reason=reason,
+            delay=STREAM_RESUME_DELAY if delay is None else delay,
+        )
+
+    def _schedule_radio_resume(
+        self,
+        channel_id: str,
+        *,
+        reason: str,
+        delay: float,
+    ) -> None:
+        """Wait briefly, then resume MA playback if MPD is still playing."""
+        task_id = f"{self.instance_id}_radio_resume_{channel_id}"
+
+        async def _resume_after_delay() -> None:
+            try:
+                await asyncio.sleep(delay)
+                nowplaying = await self._get_nowplaying(channel_id)
+                if nowplaying.get("state") != "play":
+                    return
+                if not self._channel_has_stalled_queues(channel_id):
+                    return
+                if not self._resume_cooldown_ready(channel_id):
+                    return
+                self._last_resume_attempt[channel_id] = time.time()
+                self.logger.info(
+                    "Auto-resume triggered for channel %s (%s)",
+                    channel_id,
+                    reason,
+                )
+                await self._resume_radio_queues(channel_id)
+            finally:
+                self._resume_pending.discard(channel_id)
+
+        self.mass.create_task(_resume_after_delay(), task_id=task_id)
+
+    async def _stream_sync_loop(self) -> None:
+        """Background poll: recover MA playback after HTTP stream drops."""
+        while True:
+            try:
+                await self._sync_stalled_radio_playback()
+            except Exception as err:
+                self.logger.warning("Stream sync loop error: %s", err)
+            await asyncio.sleep(STREAM_SYNC_INTERVAL)
+
+    async def _sync_stalled_radio_playback(self) -> None:
+        """Check all provider queues; resume when MPD plays but MA does not."""
+        channels = await self._get_channels()
+        checked: set[str] = set()
+        for queue in self.mass.player_queues.all():
+            current_item = queue.current_item
+            streamdetails = current_item.streamdetails if current_item else None
+            if not streamdetails:
+                continue
+            if streamdetails.provider != self.instance_id:
+                continue
+            channel_id = streamdetails.item_id
+            if channel_id not in channels or channel_id in checked:
+                continue
+            self._track_channel_queue(channel_id, queue.queue_id)
+            if queue.state == PlaybackState.PLAYING and queue.active:
+                continue
+            checked.add(channel_id)
+            nowplaying = await self._get_nowplaying(channel_id)
+            if nowplaying.get("state") != "play":
+                continue
+            self._maybe_schedule_stream_resume(
+                channel_id,
+                reason="background-sync",
+                delay=0,
+            )
+
+        for channel_id, queue_ids in self._channel_queue_ids.items():
+            if channel_id in checked or channel_id not in channels:
+                continue
+            stalled = False
+            for queue_id in queue_ids:
+                queue = self.mass.player_queues.get(queue_id)
+                if queue is None:
+                    continue
+                if queue.state != PlaybackState.PLAYING or not queue.active:
+                    stalled = True
+                    break
+            if not stalled:
+                continue
+            nowplaying = await self._get_nowplaying(channel_id)
+            if nowplaying.get("state") != "play":
+                continue
+            self._maybe_schedule_stream_resume(
+                channel_id,
+                reason="background-sync",
+                delay=0,
+            )
+
+    async def _hard_resume_queue(self, channel_id: str, queue_id: str) -> None:
+        """Restart radio playback when the MA queue became inactive."""
+        self._bump_playback_session(channel_id)
+        resume_fn = getattr(self.mass.player_queues, "resume", None)
+        if callable(resume_fn):
+            try:
+                await resume_fn(queue_id)
+                self.logger.info(
+                    "Hard-resumed inactive queue %s (channel %s)",
+                    queue_id,
+                    channel_id,
+                )
+                return
+            except Exception as err:
+                self.logger.debug(
+                    "player_queues.resume failed for %s: %s", queue_id, err
+                )
+
+        player = self.mass.players.get_player(queue_id)
+        if player is None:
+            for candidate in self.mass.players.all_players(
+                return_unavailable=False,
+                return_disabled=False,
+            ):
+                active_queue = self.mass.players.get_active_queue(candidate)
+                if active_queue and active_queue.queue_id == queue_id:
+                    player = candidate
+                    break
+
+        if player is None:
+            self.logger.warning(
+                "No player found to hard-resume channel %s (queue %s)",
+                channel_id,
+                queue_id,
+            )
+            return
+
+        play_media = getattr(self.mass.players, "play_media", None)
+        if not callable(play_media):
+            self.logger.warning(
+                "play_media unavailable for hard-resume channel %s",
+                channel_id,
+            )
+            return
+
+        radio = await self.get_radio(channel_id)
+        await play_media(
+            player.player_id,
+            radio,
+            media_type=MediaType.RADIO,
+        )
+        self.logger.info(
+            "Hard-resumed channel %s on player %s",
+            channel_id,
+            player.player_id,
+        )
+
     async def _resume_radio_queues(self, channel_id: str) -> None:
         """Setzt MA-Wiedergabe fort, wenn MPD spielt aber der Player gestoppt ist."""
         for queue in self.mass.player_queues.all():
@@ -505,6 +723,7 @@ class MPDBackendRadioProvider(MusicProvider):
                 continue
 
             queue_id = queue.queue_id
+            self._track_channel_queue(channel_id, queue_id)
             try:
                 if queue.state == PlaybackState.PAUSED:
                     player = self.mass.players.get_player(queue_id)
@@ -524,10 +743,24 @@ class MPDBackendRadioProvider(MusicProvider):
                     current_item.queue_item_id,
                 )
                 self.logger.info(
-                    "Auto-resumed idle queue %s after playlist change (channel %s)",
+                    "Auto-resumed idle queue %s (channel %s)",
                     queue_id,
                     channel_id,
                 )
+            except InvalidCommand as err:
+                if "not active" in str(err).lower():
+                    try:
+                        await self._hard_resume_queue(channel_id, queue_id)
+                    except Exception as hard_err:
+                        self.logger.warning(
+                            "Hard-resume queue %s failed: %s",
+                            queue_id,
+                            hard_err,
+                        )
+                else:
+                    self.logger.warning(
+                        "Auto-resume queue %s failed: %s", queue_id, err
+                    )
             except (MediaNotFoundError, UnplayableMediaError) as err:
                 self.logger.warning(
                     "Auto-resume queue %s skipped (stream not ready): %s",
@@ -541,16 +774,11 @@ class MPDBackendRadioProvider(MusicProvider):
 
     def _schedule_playlist_resume(self, channel_id: str) -> None:
         """Wartet kurz, bis der MPD-Stream nach Playlist-Wechsel wieder läuft."""
-        task_id = f"{self.instance_id}_playlist_resume_{channel_id}"
-
-        async def _resume_after_delay() -> None:
-            await asyncio.sleep(PLAYLIST_RESUME_DELAY)
-            nowplaying = await self._get_nowplaying(channel_id)
-            if nowplaying.get("state") != "play":
-                return
-            await self._resume_radio_queues(channel_id)
-
-        self.mass.create_task(_resume_after_delay(), task_id=task_id)
+        self._schedule_radio_resume(
+            channel_id,
+            reason="playlist-change",
+            delay=PLAYLIST_RESUME_DELAY,
+        )
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get streamdetails for a radio channel."""
@@ -562,8 +790,11 @@ class MPDBackendRadioProvider(MusicProvider):
 
         nowplaying = await self._get_nowplaying(item_id)
         channel_info = channels[item_id]
-        stream_url = channel_info["stream_url"]
         playback_session = self._bump_playback_session(item_id)
+        stream_url = self._stream_url_with_session(
+            channel_info["stream_url"],
+            playback_session,
+        )
         self._last_track_keys[item_id] = self._build_track_key(nowplaying)
         self._last_playlists[item_id] = self._active_playlist_name(nowplaying)
 
@@ -638,4 +869,6 @@ class MPDBackendRadioProvider(MusicProvider):
 
         if playlist_changed and nowplaying.get("state") == "play":
             self._schedule_playlist_resume(channel_id)
+        elif nowplaying.get("state") == "play":
+            self._maybe_schedule_stream_resume(channel_id, reason="metadata-poll")
 

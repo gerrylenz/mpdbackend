@@ -6,7 +6,7 @@ from typing import Any
 from unittest.mock import Mock
 
 import pytest
-from music_assistant_models.enums import ContentType
+from music_assistant_models.enums import ContentType, PlaybackState
 
 from mpdbackend.provider import COVER_NAME_RE, COVER_PATH_RE, MPDBackendRadioProvider
 
@@ -16,10 +16,15 @@ def provider() -> MPDBackendRadioProvider:
     """Return a provider instance without full Music Assistant bootstrapping."""
     config = Mock()
     config.instance_id = "mpdbackend_test"
-    config.get_value.return_value = "http://default.example:4533"
+    config.get_value.side_effect = lambda key, default=None: {
+        "backend_url": "http://default.example:4533",
+        "log_level": "GLOBAL",
+    }.get(key, default)
+    manifest = Mock()
+    manifest.domain = "mpdbackend"
     return MPDBackendRadioProvider(
         mass=Mock(),
-        manifest=Mock(),
+        manifest=manifest,
         config=config,
     )
 
@@ -130,3 +135,37 @@ def test_playlist_changed_detects_mpd_playlist_switch(
     assert provider._playlist_changed("0", {"playlist": "Rock.m3u"}) is True
     assert provider._last_playlists["0"] == "Rock.m3u"
     assert provider._playlist_changed("0", {"playlist": "Rock.m3u"}) is False
+
+
+def test_stream_url_with_session_appends_query_param(
+    provider: MPDBackendRadioProvider,
+) -> None:
+    """Stream URLs should get a playback-session cache buster."""
+    assert (
+        provider._stream_url_with_session("http://stream/a", 3)
+        == "http://stream/a?_ps=3"
+    )
+    assert (
+        provider._stream_url_with_session("http://stream/a?x=1", 4)
+        == "http://stream/a?x=1&_ps=4"
+    )
+
+
+def test_channel_has_stalled_queues(provider: MPDBackendRadioProvider) -> None:
+    """Stalled queues should be detected for auto-resume."""
+    streamdetails = Mock()
+    streamdetails.provider = "mpdbackend_test"
+    streamdetails.item_id = "0"
+    current_item = Mock(streamdetails=streamdetails)
+    playing_queue = Mock(
+        current_item=current_item,
+        state=PlaybackState.PLAYING,
+    )
+    idle_queue = Mock(
+        current_item=current_item,
+        state=PlaybackState.IDLE,
+    )
+    provider.mass.player_queues.all.return_value = [playing_queue, idle_queue]
+
+    assert provider._channel_has_stalled_queues("0") is True
+    assert provider._channel_has_stalled_queues("1") is False
