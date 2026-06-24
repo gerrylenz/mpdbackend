@@ -513,27 +513,48 @@ class MPDBackendRadioProvider(MusicProvider):
         """Remember queue ids per channel for inactive-queue recovery."""
         self._channel_queue_ids.setdefault(channel_id, set()).add(queue_id)
 
-    def _channel_has_stalled_queues(self, channel_id: str) -> bool:
-        """True when MA queues for this channel exist but are not playing."""
+    def _channel_queue_matches(self, channel_id: str, queue: Any) -> bool:
+        """Return True when queue current item belongs to channel_id."""
+        current_item = queue.current_item
+        streamdetails = current_item.streamdetails if current_item else None
+        if not streamdetails:
+            return False
+        return (
+            streamdetails.provider == self.instance_id
+            and streamdetails.item_id == channel_id
+        )
+
+    def _players_want_channel_playback(self, channel_id: str) -> bool:
+        """True when a player is still in PLAYING state for this channel."""
+        for player in self.mass.players.all_players(
+            return_unavailable=False,
+            return_disabled=False,
+        ):
+            if player.state.state != PlaybackState.PLAYING:
+                continue
+            active_queue = self.mass.players.get_active_queue(player)
+            if active_queue is None or not self._channel_queue_matches(
+                channel_id, active_queue
+            ):
+                continue
+            return True
+        return False
+
+    def _should_auto_resume(self, channel_id: str) -> bool:
+        """Only recover unintended stalls, not user-initiated stops."""
+        active_stalled = False
+        inactive_stalled = False
         for queue in self.mass.player_queues.all():
-            current_item = queue.current_item
-            streamdetails = current_item.streamdetails if current_item else None
-            if not streamdetails:
-                continue
-            if streamdetails.provider != self.instance_id:
-                continue
-            if streamdetails.item_id != channel_id:
+            if not self._channel_queue_matches(channel_id, queue):
                 continue
             self._track_channel_queue(channel_id, queue.queue_id)
-            if queue.state != PlaybackState.PLAYING or not queue.active:
-                return True
-        for queue_id in self._channel_queue_ids.get(channel_id, ()):
-            queue = self.mass.player_queues.get(queue_id)
-            if queue is None:
-                continue
-            if queue.state != PlaybackState.PLAYING or not queue.active:
-                return True
-        return False
+            if queue.active and queue.state != PlaybackState.PLAYING:
+                active_stalled = True
+            elif not queue.active:
+                inactive_stalled = True
+        if active_stalled:
+            return True
+        return inactive_stalled and self._players_want_channel_playback(channel_id)
 
     def _resume_cooldown_ready(self, channel_id: str) -> bool:
         """Limit auto-resume attempts per channel."""
@@ -552,7 +573,7 @@ class MPDBackendRadioProvider(MusicProvider):
             return
         if not self._resume_cooldown_ready(channel_id):
             return
-        if not self._channel_has_stalled_queues(channel_id):
+        if not self._should_auto_resume(channel_id):
             return
         self._resume_pending.add(channel_id)
         self._schedule_radio_resume(
@@ -577,7 +598,7 @@ class MPDBackendRadioProvider(MusicProvider):
                 nowplaying = await self._get_nowplaying(channel_id)
                 if nowplaying.get("state") != "play":
                     return
-                if not self._channel_has_stalled_queues(channel_id):
+                if not self._should_auto_resume(channel_id):
                     return
                 if not self._resume_cooldown_ready(channel_id):
                     return
@@ -623,27 +644,7 @@ class MPDBackendRadioProvider(MusicProvider):
             nowplaying = await self._get_nowplaying(channel_id)
             if nowplaying.get("state") != "play":
                 continue
-            self._maybe_schedule_stream_resume(
-                channel_id,
-                reason="background-sync",
-                delay=0,
-            )
-
-        for channel_id, queue_ids in self._channel_queue_ids.items():
-            if channel_id in checked or channel_id not in channels:
-                continue
-            stalled = False
-            for queue_id in queue_ids:
-                queue = self.mass.player_queues.get(queue_id)
-                if queue is None:
-                    continue
-                if queue.state != PlaybackState.PLAYING or not queue.active:
-                    stalled = True
-                    break
-            if not stalled:
-                continue
-            nowplaying = await self._get_nowplaying(channel_id)
-            if nowplaying.get("state") != "play":
+            if not self._should_auto_resume(channel_id):
                 continue
             self._maybe_schedule_stream_resume(
                 channel_id,
@@ -869,6 +870,8 @@ class MPDBackendRadioProvider(MusicProvider):
 
         if playlist_changed and nowplaying.get("state") == "play":
             self._schedule_playlist_resume(channel_id)
-        elif nowplaying.get("state") == "play":
+        elif nowplaying.get("state") == "play" and (
+            stream_restarted or self._should_auto_resume(channel_id)
+        ):
             self._maybe_schedule_stream_resume(channel_id, reason="metadata-poll")
 
