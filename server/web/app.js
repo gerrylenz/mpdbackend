@@ -42,6 +42,7 @@ const state = {
   streamPlaying: false,
   streamWanted: false,
   streamReconnecting: false,
+  streamPauseSuppressed: 0,
   liveEdgeSyncId: null,
   volumeDragging: false,
   playlistChanging: false,
@@ -57,19 +58,27 @@ const nativePlayer = {
   available: false,
 };
 
-async function waitForPywebviewApi() {
+let lastStreamReconnectAt = 0;
+const STREAM_RECONNECT_MIN_MS = 2000;
+
+async function waitForPywebviewApi(timeoutMs = 300) {
   if (window.pywebview?.api) {
     return;
   }
   await new Promise((resolve) => {
-    window.addEventListener("pywebviewready", resolve, { once: true });
+    const done = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(done, timeoutMs);
+    window.addEventListener("pywebviewready", done, { once: true });
   });
 }
 
 async function detectNativePlayer() {
   try {
     await waitForPywebviewApi();
-    if (typeof window.pywebview.api.is_native_player === "function") {
+    if (typeof window.pywebview?.api?.is_native_player === "function") {
       nativePlayer.available = Boolean(await window.pywebview.api.is_native_player());
     }
   } catch (err) {
@@ -370,9 +379,31 @@ function activeStreamUrl() {
   return String(channel?.stream_url || els.stream.src || "").trim();
 }
 
-/** Live-HTTP: Browser puffert sonst mehrere Sekunden vor — an die Live-Kante springen. */
-const LIVE_EDGE_MAX_LAG_SEC = 0.25;
-const LIVE_EDGE_SYNC_MS = 150;
+/** Live-HTTP: nur bei seekbarem Puffer an die Kante springen (Icecast oft nicht seekbar). */
+const LIVE_EDGE_MAX_LAG_SEC = 2.5;
+const LIVE_EDGE_SYNC_MS = 500;
+
+function canLiveEdgeSeek(audio) {
+  if (!audio.seekable || audio.seekable.length === 0) {
+    return false;
+  }
+  try {
+    const end = audio.seekable.end(audio.seekable.length - 1);
+    const start = audio.seekable.start(0);
+    return end - start > 1;
+  } catch (_err) {
+    return false;
+  }
+}
+
+function withStreamPauseSuppressed(fn) {
+  state.streamPauseSuppressed += 1;
+  try {
+    return fn();
+  } finally {
+    state.streamPauseSuppressed -= 1;
+  }
+}
 
 function stopLiveEdgeSync() {
   if (state.liveEdgeSyncId !== null) {
@@ -386,6 +417,9 @@ function tickLiveEdge() {
   if (!state.streamPlaying || audio.paused || state.streamReconnecting) {
     return;
   }
+  if (!canLiveEdgeSeek(audio)) {
+    return;
+  }
   const ranges = audio.buffered;
   if (!ranges || ranges.length === 0) {
     return;
@@ -395,11 +429,14 @@ function tickLiveEdge() {
   if (lag <= LIVE_EDGE_MAX_LAG_SEC) {
     return;
   }
-  try {
-    audio.currentTime = Math.max(0, liveEnd - 0.05);
-  } catch (_err) {
-    // Manche Icecast-Streams sind nicht seekbar — dann bleibt nur ein nativer Client (z. B. Snapcast).
-  }
+  withStreamPauseSuppressed(() => {
+    try {
+      audio.currentTime = Math.max(0, liveEnd - 0.1);
+    } catch (_err) {
+      // Nicht seekbar — Live-Edge-Sync für diesen Stream beenden.
+      stopLiveEdgeSync();
+    }
+  });
 }
 
 function startLiveEdgeSync() {
@@ -414,9 +451,11 @@ function reloadStreamElement() {
   }
   const url = new URL(base, window.location.href);
   url.searchParams.set("t", String(Date.now()));
-  els.stream.pause();
-  els.stream.src = url.href;
-  els.stream.load();
+  withStreamPauseSuppressed(() => {
+    els.stream.pause();
+    els.stream.src = url.href;
+    els.stream.load();
+  });
   return true;
 }
 
@@ -436,7 +475,9 @@ async function pauseStream({ clearWanted = true } = {}) {
     return;
   }
   if (!els.stream.paused) {
-    els.stream.pause();
+    withStreamPauseSuppressed(() => {
+      els.stream.pause();
+    });
   }
   if (state.streamPlaying) {
     setStreamUi(false);
@@ -479,7 +520,11 @@ async function reconnectStream({ retries = 5, delayMs = 450 } = {}) {
 }
 
 async function reconnectBrowserStream({ retries = 5, delayMs = 450 } = {}) {
-  if (!state.streamWanted || !reloadStreamElement()) {
+  if (!state.streamWanted) {
+    return false;
+  }
+  const url = activeStreamUrl();
+  if (!url) {
     return false;
   }
 
@@ -488,7 +533,9 @@ async function reconnectBrowserStream({ retries = 5, delayMs = 450 } = {}) {
     for (let attempt = 0; attempt < retries; attempt += 1) {
       if (attempt > 0) {
         await new Promise((resolve) => setTimeout(resolve, delayMs));
-        reloadStreamElement();
+      }
+      if (!reloadStreamElement()) {
+        return false;
       }
       try {
         await els.stream.play();
@@ -932,11 +979,21 @@ els.stream.addEventListener("pause", () => {
   if (nativePlayer.available) {
     return;
   }
-  if (els.stream.ended || state.streamReconnecting || state.playlistChanging) {
+  if (
+    els.stream.ended ||
+    state.streamReconnecting ||
+    state.playlistChanging ||
+    state.streamPauseSuppressed > 0
+  ) {
     return;
   }
   setStreamUi(false);
   if (state.streamWanted) {
+    const now = Date.now();
+    if (now - lastStreamReconnectAt < STREAM_RECONNECT_MIN_MS) {
+      return;
+    }
+    lastStreamReconnectAt = now;
     reconnectStream().catch(console.warn);
   }
 });
