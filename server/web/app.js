@@ -343,8 +343,16 @@ function initMediaSession() {
     return;
   }
 
-  navigator.mediaSession.setActionHandler("play", async () => {
-    await startStream();
+  navigator.mediaSession.setActionHandler("play", () => {
+    if (nativePlayer.available) {
+      startStream().catch(console.warn);
+      return;
+    }
+    if (isIosSafari()) {
+      finishBrowserStreamPlay(beginBrowserStreamFromGesture());
+      return;
+    }
+    startStream().catch(console.warn);
   });
 
   navigator.mediaSession.setActionHandler("pause", () => {
@@ -377,6 +385,107 @@ function initMediaSession() {
 function activeStreamUrl() {
   const channel = state.channels[state.activeChannel];
   return String(channel?.stream_url || els.stream.src || "").trim();
+}
+
+/** Safari/WebKit: kein Live-Edge-Seek auf ICY-MP3 (bricht Wiedergabe ab). */
+function isWebKitBrowser() {
+  const ua = navigator.userAgent;
+  return /AppleWebKit/i.test(ua) && !/Chrome|Chromium|Edg/i.test(ua);
+}
+
+/** iOS: play() muss synchron im Tap-Handler laufen, sonst nur Icecast-Listener ohne Ton. */
+function isIosSafari() {
+  const ua = navigator.userAgent;
+  const isIos =
+    /iPad|iPhone|iPod/i.test(ua) ||
+    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  return isIos && isWebKitBrowser();
+}
+
+function streamUsesInsecureUrlOnSecurePage() {
+  const streamUrl = activeStreamUrl();
+  if (!streamUrl || window.location.protocol !== "https:") {
+    return false;
+  }
+  try {
+    return new URL(streamUrl, window.location.href).protocol === "http:";
+  } catch (_err) {
+    return false;
+  }
+}
+
+function detachBrowserStream() {
+  withStreamPauseSuppressed(() => {
+    els.stream.pause();
+    els.stream.removeAttribute("src");
+    if (!isWebKitBrowser()) {
+      els.stream.load();
+    }
+  });
+}
+
+/**
+ * Setzt die Stream-URL. Auf WebKit kein load() — sonst oft zwei Icecast-Listener.
+ */
+function prepareBrowserStreamSrc({ bustCache = false } = {}) {
+  const base = activeStreamUrl();
+  if (!base) {
+    return false;
+  }
+  const url = new URL(base, window.location.href);
+  if (bustCache) {
+    url.searchParams.set("t", String(Date.now()));
+  }
+  const href = url.href;
+  const current = els.stream.currentSrc || els.stream.src || "";
+  withStreamPauseSuppressed(() => {
+    if (current && current !== href) {
+      els.stream.pause();
+      els.stream.removeAttribute("src");
+    }
+    if (els.stream.src === href) {
+      return;
+    }
+    els.stream.src = href;
+    if (!isWebKitBrowser()) {
+      els.stream.load();
+    }
+  });
+  return true;
+}
+
+function handleBrowserStreamPlayError(err) {
+  console.warn("stream play failed", err);
+  state.streamWanted = false;
+  detachBrowserStream();
+  setStreamUi(false);
+  if (streamUsesInsecureUrlOnSecurePage()) {
+    console.warn(
+      "Safari blockiert HTTP-Audio auf HTTPS-Seiten — Stream-URL auf HTTPS umstellen.",
+    );
+  }
+}
+
+/** Stream-Start im selben Tick wie der Klick/Tap (wichtig für iOS Safari). */
+function beginBrowserStreamFromGesture() {
+  state.streamWanted = true;
+  if (!prepareBrowserStreamSrc({ bustCache: false })) {
+    state.streamWanted = false;
+    return null;
+  }
+  if (!els.stream.paused) {
+    return Promise.resolve();
+  }
+  return els.stream.play();
+}
+
+function finishBrowserStreamPlay(playPromise) {
+  if (!playPromise) {
+    return;
+  }
+  playPromise
+    .then(() => setStreamUi(true))
+    .catch(handleBrowserStreamPlayError);
 }
 
 /** Live-HTTP: nur bei seekbarem Puffer an die Kante springen (Icecast oft nicht seekbar). */
@@ -440,23 +549,15 @@ function tickLiveEdge() {
 }
 
 function startLiveEdgeSync() {
+  if (isWebKitBrowser()) {
+    return;
+  }
   stopLiveEdgeSync();
   state.liveEdgeSyncId = setInterval(tickLiveEdge, LIVE_EDGE_SYNC_MS);
 }
 
 function reloadStreamElement() {
-  const base = activeStreamUrl();
-  if (!base) {
-    return false;
-  }
-  const url = new URL(base, window.location.href);
-  url.searchParams.set("t", String(Date.now()));
-  withStreamPauseSuppressed(() => {
-    els.stream.pause();
-    els.stream.src = url.href;
-    els.stream.load();
-  });
-  return true;
+  return prepareBrowserStreamSrc({ bustCache: true });
 }
 
 async function pauseStream({ clearWanted = true } = {}) {
@@ -472,6 +573,14 @@ async function pauseStream({ clearWanted = true } = {}) {
     if (state.streamPlaying) {
       setStreamUi(false);
     }
+    return;
+  }
+  if (isWebKitBrowser()) {
+    if (clearWanted) {
+      state.streamWanted = false;
+    }
+    detachBrowserStream();
+    setStreamUi(false);
     return;
   }
   if (!els.stream.paused) {
@@ -578,6 +687,10 @@ async function startStream({ forceReload = false } = {}) {
     await reconnectBrowserStream();
     return;
   }
+  if (isIosSafari()) {
+    finishBrowserStreamPlay(beginBrowserStreamFromGesture());
+    return;
+  }
   if (!els.stream.src) {
     reloadStreamElement();
   }
@@ -585,7 +698,7 @@ async function startStream({ forceReload = false } = {}) {
     await els.stream.play();
     setStreamUi(true);
   } catch (err) {
-    console.warn(err);
+    handleBrowserStreamPlayError(err);
     await reconnectBrowserStream();
   }
 }
@@ -777,7 +890,7 @@ function updateChannelUi(channelId) {
   };
   els.stationLogo.src = logoUrl;
 
-  if (channel.stream_url) {
+  if (channel.stream_url && !isIosSafari()) {
     els.stream.src = channel.stream_url;
   }
 }
@@ -930,19 +1043,33 @@ els.btnStop.addEventListener("click", () => {
   postText("/cmd/player", "stop").catch(console.warn);
 });
 
-els.btnPlay.addEventListener("click", async () => {
+els.btnPlay.addEventListener("click", () => {
   const command = state.playbackState === "play" ? "stop" : "play";
   if (command === "stop") {
     pauseStream();
+    postText("/cmd/player", command).catch(console.warn);
+    return;
   }
-  try {
-    await postText("/cmd/player", command);
-    if (command === "play") {
-      await startStream();
-    }
-  } catch (err) {
-    console.warn(err);
+
+  let playPromise = null;
+  if (!nativePlayer.available && isIosSafari()) {
+    playPromise = beginBrowserStreamFromGesture();
   }
+
+  postText("/cmd/player", command)
+    .then(() => {
+      if (playPromise) {
+        finishBrowserStreamPlay(playPromise);
+        return;
+      }
+      return startStream();
+    })
+    .catch((err) => {
+      console.warn(err);
+      if (playPromise) {
+        handleBrowserStreamPlayError(err);
+      }
+    });
 });
 
 els.volume.addEventListener("pointerdown", () => {
@@ -962,17 +1089,27 @@ els.volume.addEventListener("change", () => {
   postText("/cmd/volume", els.volume.value).catch(console.warn);
 });
 
-els.btnStream.addEventListener("click", async () => {
+els.btnStream.addEventListener("click", () => {
   if (!activeStreamUrl()) {
     return;
   }
 
   if (state.streamPlaying || state.streamWanted) {
-    await pauseStream();
+    pauseStream().catch(console.warn);
     return;
   }
 
-  await startStream();
+  if (nativePlayer.available) {
+    startStream().catch(console.warn);
+    return;
+  }
+
+  if (isIosSafari()) {
+    finishBrowserStreamPlay(beginBrowserStreamFromGesture());
+    return;
+  }
+
+  startStream().catch(console.warn);
 });
 
 els.stream.addEventListener("pause", () => {
@@ -987,19 +1124,27 @@ els.stream.addEventListener("pause", () => {
   ) {
     return;
   }
+  const wasPlaying = state.streamPlaying;
   setStreamUi(false);
-  if (state.streamWanted) {
-    const now = Date.now();
-    if (now - lastStreamReconnectAt < STREAM_RECONNECT_MIN_MS) {
-      return;
-    }
-    lastStreamReconnectAt = now;
-    reconnectStream().catch(console.warn);
+  if (!state.streamWanted || !wasPlaying) {
+    return;
   }
+  if (isWebKitBrowser()) {
+    return;
+  }
+  const now = Date.now();
+  if (now - lastStreamReconnectAt < STREAM_RECONNECT_MIN_MS) {
+    return;
+  }
+  lastStreamReconnectAt = now;
+  reconnectStream().catch(console.warn);
 });
 
 els.stream.addEventListener("play", () => {
   if (nativePlayer.available) {
+    return;
+  }
+  if (state.streamPlaying) {
     return;
   }
   setStreamUi(true);
