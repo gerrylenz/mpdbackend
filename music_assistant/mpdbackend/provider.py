@@ -540,21 +540,34 @@ class MPDBackendRadioProvider(MusicProvider):
             return True
         return False
 
-    def _should_auto_resume(self, channel_id: str) -> bool:
-        """Only recover unintended stalls, not user-initiated stops."""
-        active_stalled = False
-        inactive_stalled = False
+    def _should_auto_resume(
+        self,
+        channel_id: str,
+        *,
+        stream_restarted: bool = False,
+    ) -> bool:
+        """Only recover when a player still wants playback but the queue stalled."""
+        if not self._players_want_channel_playback(channel_id):
+            return False
+
         for queue in self.mass.player_queues.all():
             if not self._channel_queue_matches(channel_id, queue):
                 continue
             self._track_channel_queue(channel_id, queue.queue_id)
-            if queue.active and queue.state != PlaybackState.PLAYING:
-                active_stalled = True
-            elif not queue.active:
-                inactive_stalled = True
-        if active_stalled:
+            if queue.state == PlaybackState.PLAYING and queue.active:
+                return False
             return True
-        return inactive_stalled and self._players_want_channel_playback(channel_id)
+
+        if stream_restarted:
+            return True
+
+        for queue_id in self._channel_queue_ids.get(channel_id, ()):
+            queue = self.mass.player_queues.get(queue_id)
+            if queue is None:
+                continue
+            if queue.state != PlaybackState.PLAYING or not queue.active:
+                return True
+        return False
 
     def _resume_cooldown_ready(self, channel_id: str) -> bool:
         """Limit auto-resume attempts per channel."""
@@ -870,8 +883,9 @@ class MPDBackendRadioProvider(MusicProvider):
 
         if playlist_changed and nowplaying.get("state") == "play":
             self._schedule_playlist_resume(channel_id)
-        elif nowplaying.get("state") == "play" and (
-            stream_restarted or self._should_auto_resume(channel_id)
+        elif nowplaying.get("state") == "play" and self._should_auto_resume(
+            channel_id,
+            stream_restarted=stream_restarted,
         ):
             self._maybe_schedule_stream_resume(channel_id, reason="metadata-poll")
 

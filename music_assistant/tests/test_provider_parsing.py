@@ -182,18 +182,24 @@ def test_should_auto_resume_respects_user_stop(provider: MPDBackendRadioProvider
     assert provider._should_auto_resume("1") is False
 
     provider.mass.player_queues.all.return_value = [idle_active_queue]
-    assert provider._should_auto_resume("0") is True
-
-    provider.mass.player_queues.all.return_value = [playing_queue]
+    provider.mass.players.all_players.return_value = []
     assert provider._should_auto_resume("0") is False
 
-    stopped_queue.active = False
     playing_player = Mock()
     playing_player.state.state = PlaybackState.PLAYING
     playing_player.state.synced_to = None
     playing_player.state.active_group = None
     playing_player.state.active_source = None
     playing_player.player_id = "player0"
+    provider.mass.player_queues.all.return_value = [idle_active_queue]
+    provider.mass.players.all_players.return_value = [playing_player]
+    provider.mass.players.get_active_queue.return_value = idle_active_queue
+    assert provider._should_auto_resume("0") is True
+
+    provider.mass.player_queues.all.return_value = [playing_queue]
+    assert provider._should_auto_resume("0") is False
+
+    stopped_queue.active = False
     provider.mass.player_queues.all.return_value = [stopped_queue]
     provider.mass.players.all_players.return_value = [playing_player]
     provider.mass.players.get_active_queue.return_value = stopped_queue
