@@ -3,6 +3,9 @@
 """
 Löscht Dateien aus der mpdbackend-Markierliste (GET /markfordelete).
 
+Pro Eintrag: Pfad ermitteln → eine Ebene über dem Album-Ordner (Künstler-Ebene)
+→ dort rekursiv nach dem Dateinamen suchen und alle Treffer löschen.
+
 Konfiguration in delete_marked_files.env neben diesem Skript (Vorlage:
 delete_marked_files.env.example). CLI-Argumente überschreiben die Datei.
 
@@ -118,6 +121,54 @@ def load_config(explicit: str | None) -> tuple[dict[str, str], Path | None]:
 def config_bool(raw: str) -> bool:
     """Wandelt Konfigurationswerte in bool um."""
     return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+def normalize_rel_path(rel_path: str) -> str | None:
+    """Normalisiert einen MPD-Relativpfad; None bei ungültigen Werten."""
+    rel = rel_path.strip().replace("\\", "/")
+    if not rel or rel.startswith("/"):
+        return None
+    if ".." in Path(rel).parts:
+        return None
+    return rel
+
+
+def search_root_for_marked(music_root: Path, norm: str) -> Path | None:
+    """Liefert die Suchwurzel eine Ebene über dem unmittelbaren Album-Ordner.
+
+    Artist/Album1/Song.mp3 → Artist/
+    Artist/Song.mp3        → Artist/
+    Song.mp3               → Musik-Wurzel
+    """
+    parts = Path(norm).parts
+    if len(parts) == 1:
+        return music_root.resolve()
+    if len(parts) == 2:
+        return resolve_under_root(music_root, parts[0])
+    parent_rel = Path(*parts[:-2]).as_posix()
+    return resolve_under_root(music_root, parent_rel)
+
+
+def find_targets_under_parent(
+    music_root: Path, norm: str
+) -> tuple[list[Path], Path | None, str | None]:
+    """Sucht rekursiv ab der Künstler-Ebene alle Dateien mit gleichem Namen.
+
+    Returns (targets, search_root, error).
+    """
+    filename = Path(norm).name
+    search_root = search_root_for_marked(music_root, norm)
+    if search_root is None:
+        return [], None, f"ungültiger Pfad (außerhalb der Wurzel): {norm!r}"
+    if not search_root.is_dir():
+        return [], search_root, f"Verzeichnis nicht gefunden: {search_root}"
+
+    targets = sorted(
+        path.resolve()
+        for path in search_root.rglob(filename)
+        if path.is_file()
+    )
+    return targets, search_root, None
 
 
 @dataclass(frozen=True)
@@ -245,10 +296,10 @@ def delete_marked(
     dry_run: bool,
     cover_dir: Path | None,
 ) -> tuple[int, int, int, list[str]]:
-    """Löscht Dateien unter music_root.
+    """Löscht markierte Dateien rekursiv ab dem jeweiligen Elternverzeichnis.
 
     Returns (deleted, skipped, missing, errors).
-    missing zählt fehlende Dateien; errors enthält nur blockierende Fehler.
+    missing zählt Markierungseinträge ohne Treffer; errors enthält blockierende Fehler.
     """
     deleted = 0
     skipped = 0
@@ -266,36 +317,49 @@ def delete_marked(
             continue
 
         log(f"{prefix} {mode}: {rel}")
-        target = resolve_under_root(music_root, rel)
-        if target is None:
+        norm = normalize_rel_path(rel)
+        if norm is None:
             msg = f"ungültiger Pfad (außerhalb der Wurzel): {rel!r}"
             log(f"{prefix} FEHLER: {msg}")
             errors.append(msg)
             continue
 
-        log(f"{prefix} Ziel: {target}")
-        if not target.is_file():
-            msg = f"keine Datei: {target}"
+        targets, search_root, find_error = find_targets_under_parent(music_root, norm)
+        if find_error:
+            log(f"{prefix} FEHLER: {find_error}")
+            if find_error.startswith("ungültiger Pfad"):
+                errors.append(find_error)
+            else:
+                missing += 1
+            continue
+
+        assert search_root is not None
+        log(f"{prefix} Suche ab: {search_root} (Dateiname: {Path(norm).name})")
+
+        if not targets:
+            msg = f"keine Datei gefunden unter {search_root}"
             log(f"{prefix} FEHLER: {msg}")
             missing += 1
             continue
 
-        if cover_dir is not None:
-            remove_cover_cache(cover_dir, target, dry_run=dry_run)
+        for target in targets:
+            log(f"{prefix} Ziel: {target}")
+            if cover_dir is not None:
+                remove_cover_cache(cover_dir, target, dry_run=dry_run)
 
-        if dry_run:
-            log(f"{prefix} würde gelöscht werden")
-            deleted += 1
-            continue
+            if dry_run:
+                log(f"{prefix} würde gelöscht werden: {target}")
+                deleted += 1
+                continue
 
-        try:
-            target.unlink()
-            log(f"{prefix} gelöscht")
-            deleted += 1
-        except OSError as err:
-            msg = f"{rel}: {err}"
-            log(f"{prefix} FEHLER: {err}")
-            errors.append(msg)
+            try:
+                target.unlink()
+                log(f"{prefix} gelöscht: {target}")
+                deleted += 1
+            except OSError as err:
+                msg = f"{target}: {err}"
+                log(f"{prefix} FEHLER: {err}")
+                errors.append(msg)
 
     return deleted, skipped, missing, errors
 
