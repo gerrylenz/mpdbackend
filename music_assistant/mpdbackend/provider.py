@@ -524,13 +524,24 @@ class MPDBackendRadioProvider(MusicProvider):
             and streamdetails.item_id == channel_id
         )
 
+    @staticmethod
+    def _player_playback_state(player: Any) -> PlaybackState | None:
+        """Read playback state from internal Player (MA 2.9+ API)."""
+        playback_state = getattr(player, "playback_state", None)
+        if isinstance(playback_state, PlaybackState):
+            return playback_state
+        attr = getattr(player, "_attr_playback_state", None)
+        if isinstance(attr, PlaybackState):
+            return attr
+        return None
+
     def _players_want_channel_playback(self, channel_id: str) -> bool:
         """True when a player is still in PLAYING state for this channel."""
         for player in self.mass.players.all_players(
             return_unavailable=False,
             return_disabled=False,
         ):
-            if player.state.state != PlaybackState.PLAYING:
+            if self._player_playback_state(player) != PlaybackState.PLAYING:
                 continue
             active_queue = self.mass.players.get_active_queue(player)
             if active_queue is None or not self._channel_queue_matches(
