@@ -151,6 +151,27 @@ def test_stream_url_with_session_appends_query_param(
     )
 
 
+def test_player_playback_state_reads_playback_state_and_attr(
+    provider: MPDBackendRadioProvider,
+) -> None:
+    """Player state must use playback_state without touching player.state."""
+    new_player = Mock()
+    new_player.playback_state = PlaybackState.PLAYING
+    assert provider._player_playback_state(new_player) == PlaybackState.PLAYING
+
+    attr_player = Mock(spec=[])
+    attr_player._attr_playback_state = PlaybackState.PAUSED
+    assert provider._player_playback_state(attr_player) == PlaybackState.PAUSED
+
+    broken_state_player = Mock()
+    broken_state_player.playback_state = None
+    type(broken_state_player).state = property(
+        lambda _self: (_ for _ in ()).throw(AttributeError("no state"))
+    )
+    broken_state_player._attr_playback_state = PlaybackState.IDLE
+    assert provider._player_playback_state(broken_state_player) == PlaybackState.IDLE
+
+
 def test_should_auto_resume_respects_user_stop(provider: MPDBackendRadioProvider) -> None:
     """Inactive idle queues after user stop must not trigger auto-resume."""
     streamdetails = Mock()
@@ -186,10 +207,7 @@ def test_should_auto_resume_respects_user_stop(provider: MPDBackendRadioProvider
     assert provider._should_auto_resume("0") is False
 
     playing_player = Mock()
-    playing_player.state.state = PlaybackState.PLAYING
-    playing_player.state.synced_to = None
-    playing_player.state.active_group = None
-    playing_player.state.active_source = None
+    playing_player.playback_state = PlaybackState.PLAYING
     playing_player.player_id = "player0"
     provider.mass.player_queues.all.return_value = [idle_active_queue]
     provider.mass.players.all_players.return_value = [playing_player]
