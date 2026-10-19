@@ -6,10 +6,19 @@ import time
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
 
-from music_assistant_models.enums import ContentType, ImageType, MediaType, PlaybackState, StreamType
+from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.enums import (
+    ConfigEntryType,
+    ContentType,
+    ImageType,
+    MediaType,
+    PlaybackState,
+    StreamType,
+)
 from music_assistant_models.errors import (
     InvalidCommand,
     MediaNotFoundError,
+    ProviderUnavailableError,
     UnplayableMediaError,
 )
 from music_assistant_models.media_items import (
@@ -30,6 +39,7 @@ from .constants import (
     CHANNELS_RELOAD_INTERVAL,
     CONF_BACKEND_URL,
     CONTENT_TYPE_FROM_STRING,
+    DEFAULT_BACKEND_URL,
     STREAM_METADATA_UPDATE_INTERVAL,
     PLAYLIST_RESUME_DELAY,
     STREAM_RESUME_COOLDOWN,
@@ -48,6 +58,24 @@ COVER_PATH_RE = re.compile(
 STATION_LOGO_PREFIX = "stationlogo:"
 
 
+def backend_url_config_entries() -> tuple[ConfigEntry, ...]:
+    """Config entry for the metadata backend URL."""
+    return (
+        ConfigEntry(
+            key=CONF_BACKEND_URL,
+            type=ConfigEntryType.STRING,
+            label="mpdbackend URL",
+            description=(
+                "Address of the mpdbackend HTTP API, for example "
+                "http://edeka.ex-store.de:4533. Used for every channel "
+                "that has no backend_url of its own."
+            ),
+            required=True,
+            default_value=DEFAULT_BACKEND_URL,
+        ),
+    )
+
+
 class MPDBackendRadioProvider(MusicProvider):
     """Expose mpdbackend.py radio channels to Music Assistant."""
 
@@ -59,6 +87,7 @@ class MPDBackendRadioProvider(MusicProvider):
         self._last_seconds_streamed: dict[str, int] = {}
         self._channels: dict[str, RadioMpdChannel] = {}
         self._channels_loaded_at = 0.0
+        self._channels_load_ok = False
         self._last_playlists: dict[str, str] = {}
         self._last_resume_attempt: dict[str, float] = {}
         self._resume_pending: set[str] = set()
@@ -75,6 +104,10 @@ class MPDBackendRadioProvider(MusicProvider):
     async def unload(self, is_removed: bool = False) -> None:
         """Called when the provider is unloaded."""
 
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return provider options. Music Assistant resolves these on the instance."""
+        return backend_url_config_entries()
+
     @property
     def is_streaming_provider(self) -> bool:
         """Return True because the stream lives outside MA."""
@@ -83,7 +116,53 @@ class MPDBackendRadioProvider(MusicProvider):
     @property
     def default_backend_url(self) -> str:
         """Default metadata backend URL without trailing slash."""
-        return str(self.config.get_value(CONF_BACKEND_URL)).rstrip("/")
+        return self._normalize_backend_url(self._configured_backend_url())
+
+    def _configured_backend_url(self) -> Any:
+        """Prefer the setup-flow URL, then the options value."""
+        setup_url = self._setup_backend_url()
+        if isinstance(setup_url, str) and setup_url.strip() and setup_url.strip().lower() != "none":
+            return setup_url
+        return self.config.get_value(CONF_BACKEND_URL, DEFAULT_BACKEND_URL)
+
+    def _setup_backend_url(self) -> str | None:
+        """Return the URL stored by the setup flow, if it is a real string."""
+        config_store = getattr(self.mass, "config", None)
+        getter = getattr(config_store, "get", None)
+        if not callable(getter):
+            return None
+        try:
+            stored = getter(f"providers/{self.instance_id}/setup_data")
+        except Exception:
+            return None
+        if not isinstance(stored, dict):
+            return None
+        value = stored.get(CONF_BACKEND_URL)
+        if not isinstance(value, str):
+            return None
+        decrypt = getattr(config_store, "decrypt_string", None)
+        if callable(decrypt):
+            try:
+                decrypted = decrypt(value)
+            except Exception:
+                decrypted = value
+            if isinstance(decrypted, str):
+                value = decrypted
+        return value
+
+    @staticmethod
+    def _normalize_backend_url(configured: Any) -> str:
+        """Turn a stored URL into a usable base, never the string None."""
+        if not isinstance(configured, str):
+            return DEFAULT_BACKEND_URL
+        url = configured.strip().rstrip("/")
+        if not url or url.lower() == "none":
+            return DEFAULT_BACKEND_URL
+        return url
+
+    def _note_channels_fetch(self) -> None:
+        """Remember a catalog attempt so a down backend is not polled every tick."""
+        self._channels_loaded_at = time.time()
 
     async def _load_channels(self) -> None:
         """Fetch the radio channel list from the configured mpdbackend."""
@@ -94,16 +173,20 @@ class MPDBackendRadioProvider(MusicProvider):
                     self.logger.warning(
                         "mpdbackend returned HTTP %s for %s", response.status, url
                     )
+                    self._note_channels_fetch()
                     return
                 data = await response.json()
                 if not isinstance(data, dict):
                     self.logger.warning("mpdbackend /channels returned invalid payload")
+                    self._note_channels_fetch()
                     return
                 self._channels = self._parse_channels_payload(data)
-                self._channels_loaded_at = time.time()
+                self._channels_load_ok = True
+                self._note_channels_fetch()
                 self.logger.info("Loaded %s mpdbackend radio channel(s)", len(self._channels))
         except Exception as err:
             self.logger.warning("Could not fetch mpdbackend channels from %s: %s", url, err)
+            self._note_channels_fetch()
 
     async def _get_channels(self, *, force_reload: bool = False) -> dict[str, RadioMpdChannel]:
         """Return cached channels, reloading from mpdbackend when needed."""
@@ -111,9 +194,35 @@ class MPDBackendRadioProvider(MusicProvider):
             self._channels_loaded_at == 0.0
             or time.time() - self._channels_loaded_at >= CHANNELS_RELOAD_INTERVAL
         )
-        if force_reload or not self._channels or cache_expired:
+        if force_reload or cache_expired:
             await self._load_channels()
         return self._channels
+
+    async def _require_channels(self) -> dict[str, RadioMpdChannel]:
+        """Return the channel catalog, or fail if mpdbackend could not be read."""
+        channels = await self._get_channels()
+        if not self._channels_load_ok:
+            raise ProviderUnavailableError(
+                "mpdbackend channel list unavailable at "
+                f"{self.default_backend_url}/channels"
+            )
+        return channels
+
+    @staticmethod
+    def _channel_id_from_item(
+        item_id: str, channels: dict[str, RadioMpdChannel]
+    ) -> str | None:
+        """Map a provider item id back to a channel.
+
+        Stream metadata uses ``{channel_id}_{songid}`` so players refresh the
+        current title. That URI is not a second station.
+        """
+        if item_id in channels:
+            return item_id
+        channel_id, separator, song_id = item_id.rpartition("_")
+        if separator and song_id and channel_id in channels:
+            return channel_id
+        return None
 
     def _parse_channels_payload(self, data: dict[str, Any]) -> dict[str, RadioMpdChannel]:
         """Convert a /channels JSON object into typed channel metadata."""
@@ -162,7 +271,7 @@ class MPDBackendRadioProvider(MusicProvider):
 
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
         """Browse this provider's radio channels."""
-        channels = await self._get_channels()
+        channels = await self._require_channels()
         return [self._parse_radio(channel_id, channels) for channel_id in channels]
 
     def _parse_radio(self, channel_id: str, channels: dict[str, RadioMpdChannel]) -> Radio:
@@ -198,7 +307,7 @@ class MPDBackendRadioProvider(MusicProvider):
         if not search_query_lower:
             return results
         radios: list[Radio] = []
-        channels = await self._get_channels()
+        channels = await self._require_channels()
         for channel_id, channel_info in channels.items():
             haystack = f"{channel_info['name']} {channel_info['description']}".lower()
             if search_query_lower in haystack:
@@ -277,14 +386,15 @@ class MPDBackendRadioProvider(MusicProvider):
 
     async def get_radio(self, prov_radio_id: str) -> Radio:
         """Get full radio details by id."""
-        channels = await self._get_channels()
-        if prov_radio_id not in channels:
-            raise MediaNotFoundError("Station not found")
-        return self._parse_radio(prov_radio_id, channels)
+        channels = await self._require_channels()
+        channel_id = self._channel_id_from_item(prov_radio_id, channels)
+        if channel_id is None:
+            raise MediaNotFoundError(f"Unknown radio channel: {prov_radio_id}")
+        return self._parse_radio(channel_id, channels)
 
     async def get_library_radios(self):
         """Retrieve all configured library radio channels."""
-        channels = await self._get_channels()
+        channels = await self._require_channels()
         for channel_id in channels:
             yield self._parse_radio(channel_id, channels)
 
@@ -417,6 +527,36 @@ class MPDBackendRadioProvider(MusicProvider):
             remotely_accessible=False,
         )
 
+    def _direct_image_url_from_nowplaying(self, nowplaying: dict[str, Any]) -> str | None:
+        """Return public cover URL from mpdbackend when configured (best for Chromecast)."""
+        url = str(nowplaying.get("media_image_url") or "").strip()
+        if url.startswith(("http://", "https://")):
+            return url
+        return None
+
+    def _image_url_from_nowplaying(
+        self,
+        nowplaying: dict[str, Any],
+        item_id: str,
+        channels: dict[str, RadioMpdChannel],
+    ) -> str | None:
+        """Resolve artwork URL for stream metadata (direct URL preferred)."""
+        if direct_url := self._direct_image_url_from_nowplaying(nowplaying):
+            return direct_url
+
+        if image := self._image_from_nowplaying(nowplaying, item_id):
+            return self.mass.metadata.get_image_url(image, size=512, image_format="JPEG")
+
+        station_logo = MediaItemImage(
+            type=ImageType.THUMB,
+            path=self._station_logo_url(item_id, channels),
+            provider=self.instance_id,
+            remotely_accessible=True,
+        )
+        return self.mass.metadata.get_image_url(
+            station_logo, size=512, image_format="JPEG"
+        )
+
     async def _stream_metadata_from_nowplaying(
         self,
         nowplaying: dict[str, Any],
@@ -426,27 +566,12 @@ class MPDBackendRadioProvider(MusicProvider):
         playback_session: int | None = None,
     ) -> StreamMetadata:
         """Create live stream metadata from mpdbackend metadata."""
+        del playback_session  # only used for stream URLs, not artwork
         title = str(nowplaying.get("title") or self._channel_name(item_id, channels))
         artist = str(nowplaying.get("artist") or "")
         album = str(nowplaying.get("album") or "")
 
-        image_url: str | None = None
-        if image := self._image_from_nowplaying(nowplaying, item_id):
-            image_url = self.mass.metadata.get_image_url(
-                image, size=512, image_format="JPEG"
-            )
-        elif playback_session is not None:
-            station_logo = MediaItemImage(
-                type=ImageType.THUMB,
-                path=self._station_logo_url(item_id, channels),
-                provider=self.instance_id,
-                remotely_accessible=False,
-            )
-            image_url = self.mass.metadata.get_image_url(
-                station_logo, size=512, image_format="JPEG"
-            )
-        if image_url:
-            image_url = self._append_playback_session(image_url, playback_session)
+        image_url = self._image_url_from_nowplaying(nowplaying, item_id, channels)
 
         return StreamMetadata(
             title=title,
@@ -809,22 +934,23 @@ class MPDBackendRadioProvider(MusicProvider):
         """Get streamdetails for a radio channel."""
         if media_type != MediaType.RADIO:
             raise UnplayableMediaError(f"Unsupported media type: {media_type}")
-        channels = await self._get_channels()
-        if item_id not in channels:
+        channels = await self._require_channels()
+        channel_id = self._channel_id_from_item(item_id, channels)
+        if channel_id is None:
             raise MediaNotFoundError(f"Unknown radio channel: {item_id}")
 
-        nowplaying = await self._get_nowplaying(item_id)
-        channel_info = channels[item_id]
-        playback_session = self._bump_playback_session(item_id)
+        nowplaying = await self._get_nowplaying(channel_id)
+        channel_info = channels[channel_id]
+        playback_session = self._bump_playback_session(channel_id)
         stream_url = self._stream_url_with_session(
             channel_info["stream_url"],
             playback_session,
         )
-        self._last_track_keys[item_id] = self._build_track_key(nowplaying)
-        self._last_playlists[item_id] = self._active_playlist_name(nowplaying)
+        self._last_track_keys[channel_id] = self._build_track_key(nowplaying)
+        self._last_playlists[channel_id] = self._active_playlist_name(nowplaying)
 
         stream_details = StreamDetails(
-            item_id=item_id,
+            item_id=channel_id,
             provider=self.instance_id,
             audio_format=AudioFormat(
                 content_type=channel_info["content_type"],
@@ -837,15 +963,15 @@ class MPDBackendRadioProvider(MusicProvider):
             can_seek=False,
             duration=0,
             stream_metadata=await self._stream_metadata_from_nowplaying(
-                nowplaying, item_id, channels, playback_session=playback_session
+                nowplaying, channel_id, channels, playback_session=playback_session
             ),
             stream_metadata_update_callback=self._update_stream_metadata,
             stream_metadata_update_interval=STREAM_METADATA_UPDATE_INTERVAL,
         )
         stream_details.stream_metadata_last_updated = None
         self.mass.create_task(
-            self._sync_playback_start(item_id, nowplaying),
-            task_id=f"{self.instance_id}_playback_start_{item_id}",
+            self._sync_playback_start(channel_id, nowplaying),
+            task_id=f"{self.instance_id}_playback_start_{channel_id}",
         )
         return stream_details
 
@@ -894,9 +1020,13 @@ class MPDBackendRadioProvider(MusicProvider):
 
         if playlist_changed and nowplaying.get("state") == "play":
             self._schedule_playlist_resume(channel_id)
-        elif nowplaying.get("state") == "play" and self._should_auto_resume(
-            channel_id,
-            stream_restarted=stream_restarted,
-        ):
-            self._maybe_schedule_stream_resume(channel_id, reason="metadata-poll")
+        elif nowplaying.get("state") == "play":
+            try:
+                if self._should_auto_resume(
+                    channel_id,
+                    stream_restarted=stream_restarted,
+                ):
+                    self._maybe_schedule_stream_resume(channel_id, reason="metadata-poll")
+            except Exception as err:
+                self.logger.warning("Auto-resume check failed: %s", err)
 

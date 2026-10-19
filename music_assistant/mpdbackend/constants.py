@@ -3,6 +3,7 @@ from typing import NotRequired, TypedDict
 from music_assistant_models.enums import ContentType
 
 CONF_BACKEND_URL = "backend_url"
+DEFAULT_BACKEND_URL = "http://127.0.0.1:4533"
 
 STREAM_METADATA_UPDATE_INTERVAL = 3
 CHANNELS_RELOAD_INTERVAL = 60

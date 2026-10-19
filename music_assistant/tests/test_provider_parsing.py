@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
+import time
 from typing import Any
 from unittest.mock import Mock
 
 import pytest
 from music_assistant_models.enums import ContentType, PlaybackState
+from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
 
 from mpdbackend.provider import COVER_NAME_RE, COVER_PATH_RE, MPDBackendRadioProvider
 
@@ -151,6 +154,64 @@ def test_stream_url_with_session_appends_query_param(
     )
 
 
+def test_direct_image_url_from_nowplaying(provider: MPDBackendRadioProvider) -> None:
+    """Chromecast should prefer the public cover URL from mpdbackend."""
+    assert provider._direct_image_url_from_nowplaying(
+        {"media_image_url": "https://host.example/cover?name=x.jpg"}
+    ) == "https://host.example/cover?name=x.jpg"
+    assert provider._direct_image_url_from_nowplaying({"media_image_url": ""}) is None
+
+
+def test_image_url_from_nowplaying_prefers_media_image_url(
+    provider: MPDBackendRadioProvider,
+) -> None:
+    """Public media_image_url must bypass the MA image proxy."""
+    provider._channels = {
+        "0": {
+            "name": "A",
+            "description": "A",
+            "stream_url": "http://stream/a",
+            "content_type": ContentType.MP3,
+            "backend_url": "http://host:4533",
+        },
+    }
+    nowplaying = {
+        "media_image_url": "https://host.example/cover?name=cover_abcd.jpg",
+        "cover_name": "cover_abcd0123456789abcdef01.jpg",
+    }
+
+    assert (
+        provider._image_url_from_nowplaying(nowplaying, "0", provider._channels)
+        == "https://host.example/cover?name=cover_abcd.jpg"
+    )
+
+
+def test_image_url_from_nowplaying_falls_back_to_station_logo(
+    provider: MPDBackendRadioProvider,
+) -> None:
+    """Without cover, station logo should still be used."""
+    provider._channels = {
+        "0": {
+            "name": "A",
+            "description": "A",
+            "stream_url": "http://stream/a",
+            "content_type": ContentType.MP3,
+            "backend_url": "http://host:4533",
+            "logo_mtime": 123,
+        },
+    }
+    provider.mass.metadata.get_image_url.return_value = "http://ma/imageproxy/logo"
+
+    url = provider._image_url_from_nowplaying(
+        {"title": "Song"},
+        "0",
+        provider._channels,
+    )
+
+    assert url == "http://ma/imageproxy/logo"
+    provider.mass.metadata.get_image_url.assert_called_once()
+
+
 def test_player_playback_state_reads_playback_state_and_attr(
     provider: MPDBackendRadioProvider,
 ) -> None:
@@ -222,3 +283,93 @@ def test_should_auto_resume_respects_user_stop(provider: MPDBackendRadioProvider
     provider.mass.players.all_players.return_value = [playing_player]
     provider.mass.players.get_active_queue.return_value = stopped_queue
     assert provider._should_auto_resume("0") is True
+
+
+def test_default_backend_url_ignores_missing_config(provider: MPDBackendRadioProvider) -> None:
+    """A missing config value must not become the URL None/channels."""
+    provider.config.get_value.side_effect = lambda key, default=None: default
+
+    assert provider.default_backend_url == "http://127.0.0.1:4533"
+
+
+def test_setup_data_url_overrides_config(provider: MPDBackendRadioProvider) -> None:
+    """The address entered in the setup dialog is the one the catalog is loaded from."""
+    provider.mass.config.get.return_value = {
+        "backend_url": "http://edeka.ex-store.de:4533/"
+    }
+    provider.mass.config.decrypt_string.side_effect = lambda value: value
+
+    assert provider.default_backend_url == "http://edeka.ex-store.de:4533"
+
+
+def test_get_channels_waits_after_a_failed_fetch(provider: MPDBackendRadioProvider) -> None:
+    """An empty catalog after a failed fetch must not be reloaded on every poll."""
+    provider._channels_loaded_at = time.time()
+    provider._channels = {}
+
+    async def _unexpected_reload() -> None:
+        raise AssertionError("catalog fetch should wait for the reload interval")
+
+    provider._load_channels = _unexpected_reload  # type: ignore[method-assign]
+
+    assert asyncio.run(provider._get_channels()) == {}
+
+
+def test_channel_id_from_item_accepts_song_suffix() -> None:
+    """Now-playing URIs use channel id plus MPD song id and must still resolve."""
+    channels = {"0": {}, "home_radio": {}}
+
+    assert MPDBackendRadioProvider._channel_id_from_item("0", channels) == "0"
+    assert MPDBackendRadioProvider._channel_id_from_item("0_12656", channels) == "0"
+    assert (
+        MPDBackendRadioProvider._channel_id_from_item("home_radio_99", channels)
+        == "home_radio"
+    )
+    assert MPDBackendRadioProvider._channel_id_from_item("missing", channels) is None
+    assert MPDBackendRadioProvider._channel_id_from_item("9_1", channels) is None
+
+
+def test_get_radio_resolves_song_suffix(provider: MPDBackendRadioProvider) -> None:
+    """A stream-metadata id must return the station, not a missing-item error."""
+    provider._channels = {
+        "0": {
+            "name": "EDEKA",
+            "description": "Pos",
+            "stream_url": "http://stream/a",
+            "content_type": ContentType.MP3,
+        }
+    }
+    provider._channels_loaded_at = time.time()
+    provider._channels_load_ok = True
+
+    radio = asyncio.run(provider.get_radio("0_12656"))
+
+    assert radio.item_id == "0"
+    assert radio.name == "EDEKA"
+
+
+def test_get_radio_unknown_channel_is_not_found(provider: MPDBackendRadioProvider) -> None:
+    """A loaded catalog with no such channel is a real missing item."""
+    provider._channels = {
+        "0": {
+            "name": "EDEKA",
+            "description": "Pos",
+            "stream_url": "http://stream/a",
+            "content_type": ContentType.MP3,
+        }
+    }
+    provider._channels_loaded_at = time.time()
+    provider._channels_load_ok = True
+
+    with pytest.raises(MediaNotFoundError):
+        asyncio.run(provider.get_radio("missing"))
+
+
+def test_get_radio_when_catalog_cannot_be_loaded(
+    provider: MPDBackendRadioProvider,
+) -> None:
+    """A down metadata backend must not be reported as a missing media item."""
+    provider.mass.http_session.get.side_effect = OSError("connection refused")
+
+    with pytest.raises(ProviderUnavailableError):
+        asyncio.run(provider.get_radio("0"))
